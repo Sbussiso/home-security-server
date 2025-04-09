@@ -1,10 +1,14 @@
-import cv2 
+import tkinter as tk
+from tkinter import ttk, messagebox
+import cv2
 import os
 import time
 import requests
 import base64
 from datetime import datetime
 from dotenv import load_dotenv
+from PIL import Image, ImageTk
+import threading
 
 load_dotenv()
 
@@ -20,326 +24,207 @@ DB_ALERT_ENDPOINT = f"{REST_API_URL}/db/alert"
 DB_CLEANUP_ENDPOINT = f"{REST_API_URL}/db/cleanup"
 DB_S3URL_ENDPOINT = f"{REST_API_URL}/db/s3url"
 
-def analyze_image(image_url):
-    """
-    Analyze an image using the local REST API endpoint.
-    """
-    try:
-        response = requests.post(ANALYZE_ENDPOINT, json={'image_url': image_url})
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        return {'error': str(e), 'labels': [], 'security_alerts': []}
-
-def upload_to_s3(image_data, filename):
-    """
-    Upload an image to S3 using the local REST API endpoint.
-    """
-    try:
-        # Convert image to base64
-        _, buffer = cv2.imencode('.jpg', image_data)
-        image_base64 = base64.b64encode(buffer).decode('utf-8')
+class SecurityCameraApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Security Camera System")
+        self.root.geometry("1200x800")
         
-        # Send to REST API
-        response = requests.post(UPLOAD_ENDPOINT, json={
-            'image_data': image_base64,
-            'filename': filename
-        })
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        return {'error': str(e), 'success': False, 's3_url': None}
-
-def send_notification(recipient_email, subject, message, image_data=None):
-    """
-    Send a notification using the local REST API endpoint.
-    """
-    try:
-        # Convert image to base64 if provided
-        image_base64 = None
-        if image_data is not None:
-            _, buffer = cv2.imencode('.jpg', image_data)
-            image_base64 = base64.b64encode(buffer).decode('utf-8')
+        # Variables
+        self.is_running = False
+        self.cap = None
+        self.last_save_time = 0
+        self.last_email_time = 0
+        self.SAVE_INTERVAL = 20
+        self.EMAIL_INTERVAL = 60
         
-        # Send to REST API
-        response = requests.post(NOTIFY_ENDPOINT, json={
-            'recipient_email': recipient_email,
-            'subject': subject,
-            'message': message,
-            'image_data': image_base64
-        })
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        return {'error': str(e), 'success': False}
-
-def save_image_to_db(image_data, filename):
-    """
-    Save an image to the database using the REST API.
-    """
-    try:
-        # Convert image to base64
-        _, buffer = cv2.imencode('.jpg', image_data)
-        image_base64 = base64.b64encode(buffer).decode('utf-8')
+        # Create main frame
+        self.main_frame = ttk.Frame(root, padding="10")
+        self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
-        # Send to REST API
-        response = requests.post(DB_IMAGE_ENDPOINT, json={
-            'image_data': image_base64,
-            'filename': filename
-        })
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        return {'error': str(e), 'success': False}
-
-def add_alert_to_db(image_id, alert_type, confidence):
-    """
-    Add a security alert to the database using the REST API.
-    """
-    try:
-        response = requests.post(DB_ALERT_ENDPOINT, json={
-            'image_id': image_id,
-            'alert_type': alert_type,
-            'confidence': confidence
-        })
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        return {'error': str(e), 'success': False}
-
-def update_s3_url_in_db(image_id, s3_url):
-    """
-    Update the S3 URL for an image in the database using the REST API.
-    """
-    try:
-        response = requests.post(DB_S3URL_ENDPOINT, json={
-            'image_id': image_id,
-            's3_url': s3_url
-        })
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        return {'error': str(e), 'success': False}
-
-def cleanup_db(days=30):
-    """
-    Clean up old images from the database using the REST API.
-    """
-    try:
-        response = requests.post(DB_CLEANUP_ENDPOINT, params={'days': days})
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        return {'error': str(e), 'success': False}
-
-def analytics():
-    """List all images and security alerts in the database"""
-    print("\n===== SECURITY CAMERA ANALYTICS =====")
-    
-    try:
-        # Get recent images from the database
-        response = requests.get(DB_IMAGE_ENDPOINT, params={'limit': 1000})
-        response.raise_for_status()
-        result = response.json()
+        # Create video display
+        self.video_frame = ttk.LabelFrame(self.main_frame, text="Live Feed", padding="5")
+        self.video_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
         
-        if 'error' in result:
-            print(f"Error retrieving images: {result['error']}")
-            return
+        self.video_label = ttk.Label(self.video_frame)
+        self.video_label.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
-        images = result.get('images', [])
+        # Create control buttons
+        self.control_frame = ttk.Frame(self.main_frame)
+        self.control_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), padx=5, pady=5)
         
-        if not images:
-            print("No images found in the database.")
-            return
+        self.start_button = ttk.Button(self.control_frame, text="Start Monitoring", command=self.start_monitoring)
+        self.start_button.grid(row=0, column=0, padx=5)
         
-        # Display summary statistics
-        print(f"\nTotal Images: {len(images)}")
+        self.stop_button = ttk.Button(self.control_frame, text="Stop Monitoring", command=self.stop_monitoring, state=tk.DISABLED)
+        self.stop_button.grid(row=0, column=1, padx=5)
         
-        # Count images with alerts
-        images_with_alerts = sum(1 for img in images if img['alert_count'] > 0)
-        print(f"Images with Security Alerts: {images_with_alerts}")
-        print(f"Alert Rate: {(images_with_alerts/len(images))*100:.2f}%")
+        self.analytics_button = ttk.Button(self.control_frame, text="View Analytics", command=self.show_analytics)
+        self.analytics_button.grid(row=0, column=2, padx=5)
         
-        # Get most recent images
-        print("\n----- 10 Most Recent Images -----")
-        for i, img in enumerate(images[:10]):
-            # Timestamp is already a string from the REST API
-            timestamp_str = img['timestamp']
-            alert_status = f"🚨 {img['alert_count']} alerts" if img['alert_count'] > 0 else "No alerts"
-            print(f"{i+1}. [{timestamp_str}] {img['filename']} - {alert_status}")
+        # Create status frame
+        self.status_frame = ttk.LabelFrame(self.main_frame, text="Status", padding="5")
+        self.status_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), padx=5, pady=5)
         
-        # Get images with alerts
-        if images_with_alerts > 0:
-            print("\n----- Recent Security Alerts -----")
-            alert_count = 0
-            for img in images:
-                if img['alert_count'] > 0:
-                    # Timestamp is already a string from the REST API
-                    timestamp_str = img['timestamp']
-                    print(f"Image: {img['filename']} - {timestamp_str}")
-                    if img['s3_url']:
-                        print(f"S3 URL: {img['s3_url']}")
-                    print(f"Total Alerts: {img['alert_count']}")
-                    print("-" * 40)
-                    
-                    alert_count += 1
-                    if alert_count >= 10:  # Show only 10 most recent alerts
-                        break
+        self.status_label = ttk.Label(self.status_frame, text="System Ready")
+        self.status_label.grid(row=0, column=0, sticky=tk.W)
         
-        print("\n====================================")
-        print("For more detailed analysis, export the database to a data analysis tool.")
+        # Create alerts frame
+        self.alerts_frame = ttk.LabelFrame(self.main_frame, text="Recent Alerts", padding="5")
+        self.alerts_frame.grid(row=0, column=2, rowspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
         
-    except requests.exceptions.RequestException as e:
-        print(f"Error accessing database: {str(e)}")
-
-def main():
-    # Ensure email settings are configured
-    if not ALERT_EMAIL:
-        print("Warning: EMAIL_USER not set in .env file. Email notifications will not work.")
-    
-    # Periodically clean up old images from database (older than 30 days)
-    cleanup_result = cleanup_db(days=30)
-    if cleanup_result.get('success'):
-        deleted_count = cleanup_result.get('deleted_count', 0)
-        if deleted_count > 0:
-            print(f"Cleaned up {deleted_count} old images from database")
-    
-    # Initialize camera
-    print("Arming security system...")
-    countdown = 30
-    for i in range(countdown, 0, -1):
-        print(f"System will be armed in {i} seconds...", end="\r")
-        time.sleep(1)
-    print("\nSystem armed! Monitoring activated.")
-    
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        raise Exception("Could not open video device")
-
-    cv2.namedWindow("Motion Detection", cv2.WINDOW_NORMAL)
-    # Create the background subtractor
-    backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
-
-    # Initialize last save time
-    last_save_time = 0
-    SAVE_INTERVAL = 20  # seconds between saves
-    # Initialize last email time to prevent email flooding
-    last_email_time = 0
-    EMAIL_INTERVAL = 60  # seconds between emails
-
-    print("Press 'q' to quit")
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Failed to grab frame")
-            break
-
-        frame = cv2.resize(frame, (500, 500))
-        # Create a copy of the original frame for saving
-        original_frame = frame.copy()
+        self.alerts_text = tk.Text(self.alerts_frame, height=20, width=40)
+        self.alerts_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.alerts_text.config(state=tk.DISABLED)
         
-        fgMask = backSub.apply(frame)
-        # Further threshold to reduce shadow effects (if needed)
-        _, thresh = cv2.threshold(fgMask, 250, 255, cv2.THRESH_BINARY)
-        thresh = cv2.erode(thresh, None, iterations=2)
-        thresh = cv2.dilate(thresh, None, iterations=2)
+        # Configure grid weights
+        self.main_frame.columnconfigure(0, weight=1)
+        self.main_frame.columnconfigure(1, weight=1)
+        self.main_frame.columnconfigure(2, weight=1)
+        self.main_frame.rowconfigure(0, weight=1)
+        
+        # Initialize background subtractor
+        self.backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
+        
+        # Clean up old images
+        self.cleanup_db(days=30)
 
-        # Detect contours and track if any motion is detected
-        contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        motionDetected = False  # Flag to mark motion detection
-
-        for c in contours:
-            if cv2.contourArea(c) < 1500:
-                continue
-            # If we find a contour that meets our area threshold,
-            # set the flag to True.
-            motionDetected = True
-
-            # Draw a bounding box and label on the frame.
-            (x, y, w, h) = cv2.boundingRect(c)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, "Motion Detected", (10, 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-
-        # If motion is detected in this frame, save the original frame
-        if motionDetected:
-            print("Motion Detected!")
-            current_time = time.time()
+    def start_monitoring(self):
+        if not self.is_running:
+            self.is_running = True
+            self.start_button.config(state=tk.DISABLED)
+            self.stop_button.config(state=tk.NORMAL)
+            self.status_label.config(text="Monitoring Active")
             
-            # Check if enough time has passed since last save
-            if current_time - last_save_time >= SAVE_INTERVAL:
-                # Generate timestamp for unique filename
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"motion_{timestamp}.jpg"
+            # Start camera in a separate thread
+            self.cap = cv2.VideoCapture(0)
+            if not self.cap.isOpened():
+                messagebox.showerror("Error", "Could not open video device")
+                self.stop_monitoring()
+                return
+            
+            # Start the monitoring loop
+            self.monitor_thread = threading.Thread(target=self.monitor_loop)
+            self.monitor_thread.daemon = True
+            self.monitor_thread.start()
+
+    def stop_monitoring(self):
+        if self.is_running:
+            self.is_running = False
+            self.start_button.config(state=tk.NORMAL)
+            self.stop_button.config(state=tk.DISABLED)
+            self.status_label.config(text="System Ready")
+            
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+
+    def monitor_loop(self):
+        while self.is_running:
+            ret, frame = self.cap.read()
+            if not ret:
+                self.status_label.config(text="Failed to grab frame")
+                break
+            
+            frame = cv2.resize(frame, (500, 500))
+            original_frame = frame.copy()
+            
+            # Process frame for motion detection
+            fgMask = self.backSub.apply(frame)
+            _, thresh = cv2.threshold(fgMask, 250, 255, cv2.THRESH_BINARY)
+            thresh = cv2.erode(thresh, None, iterations=2)
+            thresh = cv2.dilate(thresh, None, iterations=2)
+            
+            # Detect motion
+            contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            motion_detected = False
+            
+            for c in contours:
+                if cv2.contourArea(c) < 1500:
+                    continue
+                motion_detected = True
+                (x, y, w, h) = cv2.boundingRect(c)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(frame, "Motion Detected", (10, 20),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            
+            # Convert frame for display
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_pil = Image.fromarray(frame_rgb)
+            frame_tk = ImageTk.PhotoImage(frame_pil)
+            
+            # Update display
+            self.video_label.config(image=frame_tk)
+            self.video_label.image = frame_tk
+            
+            # Process motion detection
+            if motion_detected:
+                current_time = time.time()
+                if current_time - self.last_save_time >= self.SAVE_INTERVAL:
+                    self.process_motion(original_frame)
+                    self.last_save_time = current_time
+            
+            # Update status
+            if motion_detected:
+                self.status_label.config(text="Motion Detected!")
+            else:
+                self.status_label.config(text="Monitoring Active")
+            
+            # Small delay to prevent high CPU usage
+            time.sleep(0.1)
+
+    def process_motion(self, frame):
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"motion_{timestamp}.jpg"
+        
+        try:
+            # Save image to database
+            save_result = self.save_image_to_db(frame, filename)
+            if not save_result.get('success'):
+                self.add_alert(f"Failed to save image: {save_result.get('error')}")
+                return
+            
+            image_id = save_result.get('image_id')
+            
+            # Upload to S3
+            upload_result = self.upload_to_s3(frame, filename)
+            if upload_result.get('success'):
+                s3_url = upload_result['s3_url']
                 
-                try:
-                    # Save the image to the database
-                    print(f"Saving image {filename} to database...")
-                    save_result = save_image_to_db(original_frame, filename)
-                    if not save_result.get('success'):
-                        print(f"Failed to save image to database: {save_result.get('error')}")
-                        continue
-                    
-                    image_id = save_result.get('image_id')
-                    print(f"Image saved with ID: {image_id}")
-                    last_save_time = current_time
-                    
-                    # Upload to S3 using REST API
-                    print(f"Uploading image to S3...")
-                    upload_result = upload_to_s3(original_frame, filename)
-                    
-                    if upload_result.get('success'):
-                        s3_url = upload_result['s3_url']
-                        print(f"Image uploaded to S3. URL: {s3_url}")
-                        
-                        # Update the S3 URL in the database
-                        update_result = update_s3_url_in_db(image_id, s3_url)
-                        if not update_result.get('success'):
-                            print(f"Failed to update S3 URL: {update_result.get('error')}")
-                        
-                        # Analyze the image using the local REST API
-                        print("Analyzing image with local REST API...")
-                        analysis = analyze_image(s3_url)
-                        
-                        if analysis.get('error'):
-                            print(f"Analysis error: {analysis['error']}")
-                        else:
-                            # Print all detected labels
-                            print("\nDetected labels:")
-                            for label in analysis['labels']:
-                                print(f"  {label['name']} (Confidence: {label['confidence']:.2f}%)")
-                            
-                            # Process and save security alerts
-                            alerts_found = False
-                            
-                            if analysis['security_alerts']:
-                                alerts_found = True
-                                print("\n🚨 SECURITY ALERTS 🚨")
-                                
-                                # Save each alert to the database
-                                for alert in analysis['security_alerts']:
-                                    print(f"  {alert['type']} (Confidence: {alert['confidence']:.2f}%)")
-                                    # Add alert to database
-                                    alert_result = add_alert_to_db(
-                                        image_id=image_id,
-                                        alert_type=alert['type'],
-                                        confidence=alert['confidence']
-                                    )
-                                    if not alert_result.get('success'):
-                                        print(f"Failed to save alert: {alert_result.get('error')}")
-                                
-                                # Check if enough time has passed since last email
-                                if ALERT_EMAIL and (current_time - last_email_time >= EMAIL_INTERVAL):
-                                    # Send email notification with the image attached
-                                    subject = "🚨 Security Alert: Suspicious Activity Detected"
-                                    
-                                    # Create email message with all detected alerts
-                                    alert_details = "\n".join([
-                                        f"- {alert['type']} (Confidence: {alert['confidence']:.2f}%)" 
-                                        for alert in analysis['security_alerts']
-                                    ])
-                                    
-                                    message = f"""Security Alert from your camera system!
+                # Update S3 URL in database
+                self.update_s3_url_in_db(image_id, s3_url)
+                
+                # Analyze image
+                analysis = self.analyze_image(s3_url)
+                if not analysis.get('error'):
+                    # Process security alerts
+                    if analysis['security_alerts']:
+                        self.process_security_alerts(image_id, analysis['security_alerts'], frame, s3_url)
+            else:
+                self.add_alert(f"Failed to upload to S3: {upload_result.get('error')}")
+                
+        except Exception as e:
+            self.add_alert(f"Error processing motion: {str(e)}")
+
+    def process_security_alerts(self, image_id, alerts, frame, s3_url):
+        current_time = time.time()
+        
+        # Add alerts to database
+        for alert in alerts:
+            alert_result = self.add_alert_to_db(image_id, alert['type'], alert['confidence'])
+            if not alert_result.get('success'):
+                self.add_alert(f"Failed to save alert: {alert_result.get('error')}")
+        
+        # Send email notification if needed
+        if ALERT_EMAIL and (current_time - self.last_email_time >= self.EMAIL_INTERVAL):
+            subject = "🚨 Security Alert: Suspicious Activity Detected"
+            alert_details = "\n".join([
+                f"- {alert['type']} (Confidence: {alert['confidence']:.2f}%)" 
+                for alert in alerts
+            ])
+            
+            message = f"""Security Alert from your camera system!
 
 Suspicious activity has been detected:
 
@@ -350,66 +235,179 @@ Image URL: {s3_url}
 
 This is an automated message from your security camera system.
 """
-                                    try:
-                                        # Send the notification using the REST API
-                                        notification_result = send_notification(
-                                            ALERT_EMAIL,
-                                            subject,
-                                            message,
-                                            original_frame
-                                        )
-                                        
-                                        if notification_result.get('success'):
-                                            print(f"Security alert email sent to {ALERT_EMAIL}")
-                                            last_email_time = current_time
-                                        else:
-                                            print(f"Failed to send email: {notification_result.get('error')}")
-                                    except Exception as e:
-                                        print(f"Error sending email: {str(e)}")
-                                elif not ALERT_EMAIL:
-                                    print("Email not sent: EMAIL_USER not configured in .env file")
-                                else:
-                                    time_since_last_email = int(current_time - last_email_time)
-                                    print(f"Email not sent: waiting {EMAIL_INTERVAL - time_since_last_email} more seconds before sending next email")
-                            else:
-                                print("\nNo security concerns detected.")
-                    else:
-                        print(f"Failed to upload to S3: {upload_result.get('error')}")
-                            
-                except Exception as e:
-                    print(f"Error processing image: {str(e)}")
-            else:
-                time_since_last = int(current_time - last_save_time)
-                print(f"Motion detected, but waiting {SAVE_INTERVAL - time_since_last} more seconds before saving next image")
+            try:
+                notification_result = self.send_notification(
+                    ALERT_EMAIL,
+                    subject,
+                    message,
+                    frame
+                )
+                
+                if notification_result.get('success'):
+                    self.add_alert(f"Security alert email sent to {ALERT_EMAIL}")
+                    self.last_email_time = current_time
+                else:
+                    self.add_alert(f"Failed to send email: {notification_result.get('error')}")
+            except Exception as e:
+                self.add_alert(f"Error sending email: {str(e)}")
+
+    def add_alert(self, message):
+        self.alerts_text.config(state=tk.NORMAL)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.alerts_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.alerts_text.see(tk.END)
+        self.alerts_text.config(state=tk.DISABLED)
+
+    def show_analytics(self):
+        try:
+            response = requests.get(DB_IMAGE_ENDPOINT, params={'limit': 1000})
+            response.raise_for_status()
+            result = response.json()
             
-        cv2.imshow("Motion Detection", frame)
-        cv2.imshow("Threshold", thresh)
+            if 'error' in result:
+                messagebox.showerror("Error", f"Error retrieving images: {result['error']}")
+                return
+            
+            images = result.get('images', [])
+            
+            if not images:
+                messagebox.showinfo("Analytics", "No images found in the database.")
+                return
+            
+            # Create analytics window
+            analytics_window = tk.Toplevel(self.root)
+            analytics_window.title("Security Camera Analytics")
+            analytics_window.geometry("800x600")
+            
+            # Create text widget for analytics
+            analytics_text = tk.Text(analytics_window, wrap=tk.WORD)
+            analytics_text.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+            
+            # Display summary statistics
+            analytics_text.insert(tk.END, f"Total Images: {len(images)}\n")
+            
+            images_with_alerts = sum(1 for img in images if img['alert_count'] > 0)
+            analytics_text.insert(tk.END, f"Images with Security Alerts: {images_with_alerts}\n")
+            analytics_text.insert(tk.END, f"Alert Rate: {(images_with_alerts/len(images))*100:.2f}%\n\n")
+            
+            # Display recent images
+            analytics_text.insert(tk.END, "----- 10 Most Recent Images -----\n")
+            for i, img in enumerate(images[:10]):
+                alert_status = f"🚨 {img['alert_count']} alerts" if img['alert_count'] > 0 else "No alerts"
+                analytics_text.insert(tk.END, f"{i+1}. [{img['timestamp']}] {img['filename']} - {alert_status}\n")
+            
+            # Display recent alerts
+            if images_with_alerts > 0:
+                analytics_text.insert(tk.END, "\n----- Recent Security Alerts -----\n")
+                alert_count = 0
+                for img in images:
+                    if img['alert_count'] > 0:
+                        analytics_text.insert(tk.END, f"Image: {img['filename']} - {img['timestamp']}\n")
+                        if img['s3_url']:
+                            analytics_text.insert(tk.END, f"S3 URL: {img['s3_url']}\n")
+                        analytics_text.insert(tk.END, f"Total Alerts: {img['alert_count']}\n")
+                        analytics_text.insert(tk.END, "-" * 40 + "\n")
+                        
+                        alert_count += 1
+                        if alert_count >= 10:
+                            break
+            
+            analytics_text.config(state=tk.DISABLED)
+            
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Error", f"Error accessing database: {str(e)}")
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("Exiting...")
-            break
+    # REST API wrapper functions
+    def analyze_image(self, image_url):
+        try:
+            response = requests.post(ANALYZE_ENDPOINT, json={'image_url': image_url})
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {'error': str(e), 'labels': [], 'security_alerts': []}
 
-    cap.release()
-    cv2.destroyAllWindows()
+    def upload_to_s3(self, image_data, filename):
+        try:
+            _, buffer = cv2.imencode('.jpg', image_data)
+            image_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            response = requests.post(UPLOAD_ENDPOINT, json={
+                'image_data': image_base64,
+                'filename': filename
+            })
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {'error': str(e), 'success': False, 's3_url': None}
+
+    def send_notification(self, recipient_email, subject, message, image_data=None):
+        try:
+            image_base64 = None
+            if image_data is not None:
+                _, buffer = cv2.imencode('.jpg', image_data)
+                image_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            response = requests.post(NOTIFY_ENDPOINT, json={
+                'recipient_email': recipient_email,
+                'subject': subject,
+                'message': message,
+                'image_data': image_base64
+            })
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {'error': str(e), 'success': False}
+
+    def save_image_to_db(self, image_data, filename):
+        try:
+            _, buffer = cv2.imencode('.jpg', image_data)
+            image_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            response = requests.post(DB_IMAGE_ENDPOINT, json={
+                'image_data': image_base64,
+                'filename': filename
+            })
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {'error': str(e), 'success': False}
+
+    def add_alert_to_db(self, image_id, alert_type, confidence):
+        try:
+            response = requests.post(DB_ALERT_ENDPOINT, json={
+                'image_id': image_id,
+                'alert_type': alert_type,
+                'confidence': confidence
+            })
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {'error': str(e), 'success': False}
+
+    def update_s3_url_in_db(self, image_id, s3_url):
+        try:
+            response = requests.post(DB_S3URL_ENDPOINT, json={
+                'image_id': image_id,
+                's3_url': s3_url
+            })
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {'error': str(e), 'success': False}
+
+    def cleanup_db(self, days=30):
+        try:
+            response = requests.post(DB_CLEANUP_ENDPOINT, params={'days': days})
+            response.raise_for_status()
+            result = response.json()
+            if result.get('success'):
+                deleted_count = result.get('deleted_count', 0)
+                if deleted_count > 0:
+                    self.add_alert(f"Cleaned up {deleted_count} old images from database")
+        except requests.exceptions.RequestException as e:
+            self.add_alert(f"Error cleaning up database: {str(e)}")
 
 if __name__ == '__main__':
-    while True:
-        print("==========STATUS:ONLINE===========")
-        print("1. ACTIVATE SECURITY SYSTEM")
-        print("---")
-        print("2. ANALYZE ACTIVITY")
-        print("---")
-        print("3. DEACTIVATE SECURITY SYSTEM")
-        print("====================================")
-        user_input = input("Enter your choice: ")
-        
-        if user_input == "1":
-            main()
-        elif user_input == "2":
-            analytics()
-        elif user_input == "3":
-            print("==========STATUS:OFFLINE===========")
-            print("Deactivating security system...")
-            print("===================================")
-            break
-
+    root = tk.Tk()
+    app = SecurityCameraApp(root)
+    root.mainloop()
