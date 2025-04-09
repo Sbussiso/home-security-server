@@ -3,4 +3,4 @@ temp_images/
 __pycache__/
 venv/
 build/
-
+dist/
