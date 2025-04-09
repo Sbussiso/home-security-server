@@ -1,63 +1,196 @@
 import cv2 
 import os
 import time
+import requests
+import base64
 from datetime import datetime
-from aws_s3 import upload_file
-from rekognition import analyze_image
-from notifications import send_security_alert
-from database import save_image, add_security_alert, save_temp_image_file, update_s3_url, cleanup_old_images, get_recent_images
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # Email to receive security alerts
 ALERT_EMAIL = os.getenv('EMAIL_USER')
+# Local REST API endpoints
+REST_API_URL = "http://localhost:5000"
+ANALYZE_ENDPOINT = f"{REST_API_URL}/analyze"
+UPLOAD_ENDPOINT = f"{REST_API_URL}/upload"
+NOTIFY_ENDPOINT = f"{REST_API_URL}/notify"
+DB_IMAGE_ENDPOINT = f"{REST_API_URL}/db/image"
+DB_ALERT_ENDPOINT = f"{REST_API_URL}/db/alert"
+DB_CLEANUP_ENDPOINT = f"{REST_API_URL}/db/cleanup"
+DB_S3URL_ENDPOINT = f"{REST_API_URL}/db/s3url"
+
+def analyze_image(image_url):
+    """
+    Analyze an image using the local REST API endpoint.
+    """
+    try:
+        response = requests.post(ANALYZE_ENDPOINT, json={'image_url': image_url})
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'error': str(e), 'labels': [], 'security_alerts': []}
+
+def upload_to_s3(image_data, filename):
+    """
+    Upload an image to S3 using the local REST API endpoint.
+    """
+    try:
+        # Convert image to base64
+        _, buffer = cv2.imencode('.jpg', image_data)
+        image_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        # Send to REST API
+        response = requests.post(UPLOAD_ENDPOINT, json={
+            'image_data': image_base64,
+            'filename': filename
+        })
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'error': str(e), 'success': False, 's3_url': None}
+
+def send_notification(recipient_email, subject, message, image_data=None):
+    """
+    Send a notification using the local REST API endpoint.
+    """
+    try:
+        # Convert image to base64 if provided
+        image_base64 = None
+        if image_data is not None:
+            _, buffer = cv2.imencode('.jpg', image_data)
+            image_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        # Send to REST API
+        response = requests.post(NOTIFY_ENDPOINT, json={
+            'recipient_email': recipient_email,
+            'subject': subject,
+            'message': message,
+            'image_data': image_base64
+        })
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'error': str(e), 'success': False}
+
+def save_image_to_db(image_data, filename):
+    """
+    Save an image to the database using the REST API.
+    """
+    try:
+        # Convert image to base64
+        _, buffer = cv2.imencode('.jpg', image_data)
+        image_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        # Send to REST API
+        response = requests.post(DB_IMAGE_ENDPOINT, json={
+            'image_data': image_base64,
+            'filename': filename
+        })
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'error': str(e), 'success': False}
+
+def add_alert_to_db(image_id, alert_type, confidence):
+    """
+    Add a security alert to the database using the REST API.
+    """
+    try:
+        response = requests.post(DB_ALERT_ENDPOINT, json={
+            'image_id': image_id,
+            'alert_type': alert_type,
+            'confidence': confidence
+        })
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'error': str(e), 'success': False}
+
+def update_s3_url_in_db(image_id, s3_url):
+    """
+    Update the S3 URL for an image in the database using the REST API.
+    """
+    try:
+        response = requests.post(DB_S3URL_ENDPOINT, json={
+            'image_id': image_id,
+            's3_url': s3_url
+        })
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'error': str(e), 'success': False}
+
+def cleanup_db(days=30):
+    """
+    Clean up old images from the database using the REST API.
+    """
+    try:
+        response = requests.post(DB_CLEANUP_ENDPOINT, params={'days': days})
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'error': str(e), 'success': False}
 
 def analytics():
     """List all images and security alerts in the database"""
     print("\n===== SECURITY CAMERA ANALYTICS =====")
     
-    # Get recent images (limit parameter is set to a high number to get all images)
-    images = get_recent_images(limit=1000)
-    
-    if not images:
-        print("No images found in the database.")
-        return
-    
-    # Display summary statistics
-    print(f"\nTotal Images: {len(images)}")
-    
-    # Count images with alerts
-    images_with_alerts = sum(1 for img in images if img['alert_count'] > 0)
-    print(f"Images with Security Alerts: {images_with_alerts}")
-    print(f"Alert Rate: {(images_with_alerts/len(images))*100:.2f}%")
-    
-    # Get most recent images
-    print("\n----- 10 Most Recent Images -----")
-    for i, img in enumerate(images[:10]):
-        timestamp_str = img['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
-        alert_status = f"🚨 {img['alert_count']} alerts" if img['alert_count'] > 0 else "No alerts"
-        print(f"{i+1}. [{timestamp_str}] {img['filename']} - {alert_status}")
-    
-    # Get images with alerts
-    if images_with_alerts > 0:
-        print("\n----- Recent Security Alerts -----")
-        alert_count = 0
-        for img in images:
-            if img['alert_count'] > 0:
-                timestamp_str = img['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
-                print(f"Image: {img['filename']} - {timestamp_str}")
-                if img['s3_url']:
-                    print(f"S3 URL: {img['s3_url']}")
-                print(f"Total Alerts: {img['alert_count']}")
-                print("-" * 40)
-                
-                alert_count += 1
-                if alert_count >= 10:  # Show only 10 most recent alerts
-                    break
-    
-    print("\n====================================")
-    print("For more detailed analysis, export the database to a data analysis tool.")
+    try:
+        # Get recent images from the database
+        response = requests.get(DB_IMAGE_ENDPOINT, params={'limit': 1000})
+        response.raise_for_status()
+        result = response.json()
+        
+        if 'error' in result:
+            print(f"Error retrieving images: {result['error']}")
+            return
+        
+        images = result.get('images', [])
+        
+        if not images:
+            print("No images found in the database.")
+            return
+        
+        # Display summary statistics
+        print(f"\nTotal Images: {len(images)}")
+        
+        # Count images with alerts
+        images_with_alerts = sum(1 for img in images if img['alert_count'] > 0)
+        print(f"Images with Security Alerts: {images_with_alerts}")
+        print(f"Alert Rate: {(images_with_alerts/len(images))*100:.2f}%")
+        
+        # Get most recent images
+        print("\n----- 10 Most Recent Images -----")
+        for i, img in enumerate(images[:10]):
+            # Timestamp is already a string from the REST API
+            timestamp_str = img['timestamp']
+            alert_status = f"🚨 {img['alert_count']} alerts" if img['alert_count'] > 0 else "No alerts"
+            print(f"{i+1}. [{timestamp_str}] {img['filename']} - {alert_status}")
+        
+        # Get images with alerts
+        if images_with_alerts > 0:
+            print("\n----- Recent Security Alerts -----")
+            alert_count = 0
+            for img in images:
+                if img['alert_count'] > 0:
+                    # Timestamp is already a string from the REST API
+                    timestamp_str = img['timestamp']
+                    print(f"Image: {img['filename']} - {timestamp_str}")
+                    if img['s3_url']:
+                        print(f"S3 URL: {img['s3_url']}")
+                    print(f"Total Alerts: {img['alert_count']}")
+                    print("-" * 40)
+                    
+                    alert_count += 1
+                    if alert_count >= 10:  # Show only 10 most recent alerts
+                        break
+        
+        print("\n====================================")
+        print("For more detailed analysis, export the database to a data analysis tool.")
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Error accessing database: {str(e)}")
 
 def main():
     # Ensure email settings are configured
@@ -65,9 +198,11 @@ def main():
         print("Warning: EMAIL_USER not set in .env file. Email notifications will not work.")
     
     # Periodically clean up old images from database (older than 30 days)
-    deleted_count = cleanup_old_images(days=30)
-    if deleted_count > 0:
-        print(f"Cleaned up {deleted_count} old images from database")
+    cleanup_result = cleanup_db(days=30)
+    if cleanup_result.get('success'):
+        deleted_count = cleanup_result.get('deleted_count', 0)
+        if deleted_count > 0:
+            print(f"Cleaned up {deleted_count} old images from database")
     
     # Initialize camera
     print("Arming security system...")
@@ -91,10 +226,6 @@ def main():
     # Initialize last email time to prevent email flooding
     last_email_time = 0
     EMAIL_INTERVAL = 60  # seconds between emails
-
-    # Create temp directory if needed (for S3 uploads and email attachments)
-    if not os.path.exists('temp_images'):
-        os.makedirs('temp_images')
 
     print("Press 'q' to quit")
     while True:
@@ -144,27 +275,34 @@ def main():
                 try:
                     # Save the image to the database
                     print(f"Saving image {filename} to database...")
-                    image_id = save_image(original_frame, filename)
+                    save_result = save_image_to_db(original_frame, filename)
+                    if not save_result.get('success'):
+                        print(f"Failed to save image to database: {save_result.get('error')}")
+                        continue
+                    
+                    image_id = save_result.get('image_id')
                     print(f"Image saved with ID: {image_id}")
                     last_save_time = current_time
                     
-                    # Create temporary file for S3 upload
-                    temp_image_path = save_temp_image_file(image_id)
+                    # Upload to S3 using REST API
+                    print(f"Uploading image to S3...")
+                    upload_result = upload_to_s3(original_frame, filename)
                     
-                    # Upload to S3 and get URL
-                    success, error, s3_url = upload_file(temp_image_path, 'computer-vision-analysis', filename)
-                    if success:
+                    if upload_result.get('success'):
+                        s3_url = upload_result['s3_url']
                         print(f"Image uploaded to S3. URL: {s3_url}")
                         
                         # Update the S3 URL in the database
-                        update_s3_url(image_id, s3_url)
+                        update_result = update_s3_url_in_db(image_id, s3_url)
+                        if not update_result.get('success'):
+                            print(f"Failed to update S3 URL: {update_result.get('error')}")
                         
-                        # Analyze the image with Rekognition
-                        print("Analyzing image with Rekognition...")
+                        # Analyze the image using the local REST API
+                        print("Analyzing image with local REST API...")
                         analysis = analyze_image(s3_url)
                         
-                        if analysis['error']:
-                            print(f"Rekognition analysis error: {analysis['error']}")
+                        if analysis.get('error'):
+                            print(f"Analysis error: {analysis['error']}")
                         else:
                             # Print all detected labels
                             print("\nDetected labels:")
@@ -182,11 +320,13 @@ def main():
                                 for alert in analysis['security_alerts']:
                                     print(f"  {alert['type']} (Confidence: {alert['confidence']:.2f}%)")
                                     # Add alert to database
-                                    add_security_alert(
+                                    alert_result = add_alert_to_db(
                                         image_id=image_id,
                                         alert_type=alert['type'],
                                         confidence=alert['confidence']
                                     )
+                                    if not alert_result.get('success'):
+                                        print(f"Failed to save alert: {alert_result.get('error')}")
                                 
                                 # Check if enough time has passed since last email
                                 if ALERT_EMAIL and (current_time - last_email_time >= EMAIL_INTERVAL):
@@ -211,19 +351,19 @@ Image URL: {s3_url}
 This is an automated message from your security camera system.
 """
                                     try:
-                                        # Send the email using the temporary file
-                                        email_success, email_error = send_security_alert(
-                                            ALERT_EMAIL, 
-                                            subject, 
-                                            message, 
-                                            temp_image_path
+                                        # Send the notification using the REST API
+                                        notification_result = send_notification(
+                                            ALERT_EMAIL,
+                                            subject,
+                                            message,
+                                            original_frame
                                         )
                                         
-                                        if email_success:
+                                        if notification_result.get('success'):
                                             print(f"Security alert email sent to {ALERT_EMAIL}")
                                             last_email_time = current_time
                                         else:
-                                            print(f"Failed to send email: {email_error}")
+                                            print(f"Failed to send email: {notification_result.get('error')}")
                                     except Exception as e:
                                         print(f"Error sending email: {str(e)}")
                                 elif not ALERT_EMAIL:
@@ -234,14 +374,7 @@ This is an automated message from your security camera system.
                             else:
                                 print("\nNo security concerns detected.")
                     else:
-                        print(f"Failed to upload to S3: {error}")
-                        
-                    # Clean up the temporary file
-                    if temp_image_path and os.path.exists(temp_image_path):
-                        try:
-                            os.remove(temp_image_path)
-                        except:
-                            pass  # Ignore errors when deleting temp file
+                        print(f"Failed to upload to S3: {upload_result.get('error')}")
                             
                 except Exception as e:
                     print(f"Error processing image: {str(e)}")
