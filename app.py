@@ -1,9 +1,9 @@
 import cv2 
 import os
 import time
+import requests
 from datetime import datetime
 from aws_s3 import upload_file
-from rekognition import analyze_image
 from notifications import send_security_alert
 from database import save_image, add_security_alert, save_temp_image_file, update_s3_url, cleanup_old_images, get_recent_images
 from dotenv import load_dotenv
@@ -12,6 +12,19 @@ load_dotenv()
 
 # Email to receive security alerts
 ALERT_EMAIL = os.getenv('EMAIL_USER')
+# Local REST API endpoint
+REST_API_URL = "http://localhost:5000/analyze"
+
+def analyze_image(image_url):
+    """
+    Analyze an image using the local REST API endpoint.
+    """
+    try:
+        response = requests.post(REST_API_URL, json={'image_url': image_url})
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'error': str(e), 'labels': [], 'security_alerts': []}
 
 def analytics():
     """List all images and security alerts in the database"""
@@ -159,12 +172,12 @@ def main():
                         # Update the S3 URL in the database
                         update_s3_url(image_id, s3_url)
                         
-                        # Analyze the image with Rekognition
-                        print("Analyzing image with Rekognition...")
+                        # Analyze the image using the local REST API
+                        print("Analyzing image with local REST API...")
                         analysis = analyze_image(s3_url)
                         
-                        if analysis['error']:
-                            print(f"Rekognition analysis error: {analysis['error']}")
+                        if analysis.get('error'):
+                            print(f"Analysis error: {analysis['error']}")
                         else:
                             # Print all detected labels
                             print("\nDetected labels:")
