@@ -70,6 +70,13 @@ def main():
         print(f"Cleaned up {deleted_count} old images from database")
     
     # Initialize camera
+    print("Arming security system...")
+    countdown = 30
+    for i in range(countdown, 0, -1):
+        print(f"System will be armed in {i} seconds...", end="\r")
+        time.sleep(1)
+    print("\nSystem armed! Monitoring activated.")
+    
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         raise Exception("Could not open video device")
