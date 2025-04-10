@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, Response
 from flask_restful import Resource, Api
 from rekognition import analyze_image
 from aws_s3 import upload_file, delete_bucket, s3_client
@@ -14,6 +14,9 @@ import tempfile
 import cv2
 import numpy as np
 import base64
+import threading
+import time
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -23,6 +26,202 @@ app = Flask(__name__)
 # Create an API object from Flask-RESTful
 api = Api(app)
 
+# Global variables for camera control
+camera = None
+is_monitoring = False
+monitor_thread = None
+last_frame = None
+frame_lock = threading.Lock()
+last_save_time = 0
+SAVE_INTERVAL = 20  # seconds between saves
+last_email_time = 0
+EMAIL_INTERVAL = 60  # seconds between emails
+
+# Local REST API endpoints
+REST_API_URL = "http://localhost:5000"
+ANALYZE_ENDPOINT = f"{REST_API_URL}/analyze"
+UPLOAD_ENDPOINT = f"{REST_API_URL}/upload"
+NOTIFY_ENDPOINT = f"{REST_API_URL}/notify"
+DB_IMAGE_ENDPOINT = f"{REST_API_URL}/db/image"
+DB_ALERT_ENDPOINT = f"{REST_API_URL}/db/alert"
+DB_CLEANUP_ENDPOINT = f"{REST_API_URL}/db/cleanup"
+DB_S3URL_ENDPOINT = f"{REST_API_URL}/db/s3url"
+S3_BUCKET_DELETE_ENDPOINT = f"{REST_API_URL}/s3/bucket/delete"
+CAMERA_CONTROL_ENDPOINT = f"{REST_API_URL}/camera"
+
+def monitor_camera():
+    global camera, is_monitoring, last_frame, frame_lock, last_save_time, last_email_time
+    backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
+    
+    while is_monitoring:
+        if camera is None or not camera.isOpened():
+            time.sleep(0.1)
+            continue
+            
+        ret, frame = camera.read()
+        if not ret:
+            continue
+            
+        # Process frame for motion detection
+        frame = cv2.resize(frame, (500, 500))
+        original_frame = frame.copy()
+        fgMask = backSub.apply(frame)
+        _, thresh = cv2.threshold(fgMask, 250, 255, cv2.THRESH_BINARY)
+        thresh = cv2.erode(thresh, None, iterations=2)
+        thresh = cv2.dilate(thresh, None, iterations=2)
+        
+        # Detect motion
+        contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        motion_detected = False
+        
+        for c in contours:
+            if cv2.contourArea(c) < 1500:
+                continue
+            motion_detected = True
+            (x, y, w, h) = cv2.boundingRect(c)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(frame, "Motion Detected", (10, 20),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        
+        with frame_lock:
+            last_frame = frame.copy()
+        
+        # Process motion detection
+        if motion_detected:
+            current_time = time.time()
+            if current_time - last_save_time >= SAVE_INTERVAL:
+                process_motion(original_frame)
+                last_save_time = current_time
+        
+        time.sleep(0.1)
+
+def process_motion(frame):
+    """
+    Process a frame with detected motion:
+    1. Save to database
+    2. Upload to S3
+    3. Analyze with Rekognition
+    4. Send email notification if needed
+    """
+    try:
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"motion_{timestamp}.jpg"
+        
+        # Save to temporary file
+        temp_path = f"temp_{filename}"
+        cv2.imwrite(temp_path, frame)
+        
+        try:
+            # First save to database
+            _, buffer = cv2.imencode('.jpg', frame)
+            image_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            response = requests.post(DB_IMAGE_ENDPOINT, json={
+                'image_data': image_base64,
+                'filename': filename
+            })
+            response.raise_for_status()
+            db_result = response.json()
+            
+            if not db_result.get('success'):
+                print(f"Failed to save image to database: {db_result.get('error')}")
+                return
+                
+            image_id = db_result.get('image_id')
+            
+            # Upload to S3
+            success, error, s3_url = upload_file(temp_path, 'computer-vision-analysis', filename)
+            if not success:
+                print(f"Failed to upload to S3: {error}")
+                return
+            
+            # Update S3 URL in database
+            response = requests.post(DB_S3URL_ENDPOINT, json={
+                'image_id': image_id,
+                's3_url': s3_url
+            })
+            response.raise_for_status()
+            
+            # Analyze with Rekognition
+            analysis = analyze_image(s3_url)
+            if analysis.get('error'):
+                print(f"Error analyzing image: {analysis['error']}")
+                return
+            
+            # Process security alerts
+            if analysis['security_alerts']:
+                process_security_alerts(image_id, analysis['security_alerts'], frame, s3_url)
+                
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                
+    except Exception as e:
+        print(f"Error processing motion: {str(e)}")
+
+def process_security_alerts(image_id, alerts, frame, s3_url):
+    """
+    Process security alerts:
+    1. Add alerts to database
+    2. Send email notification if needed
+    """
+    global last_email_time
+    
+    try:
+        current_time = time.time()
+        
+        # Add alerts to database
+        for alert in alerts:
+            try:
+                response = requests.post(DB_ALERT_ENDPOINT, json={
+                    'image_id': image_id,
+                    'alert_type': alert['type'],
+                    'confidence': alert['confidence']
+                })
+                response.raise_for_status()
+            except Exception as e:
+                print(f"Failed to save alert: {str(e)}")
+        
+        # Send email notification if needed
+        if os.getenv('EMAIL_USER') and (current_time - last_email_time >= EMAIL_INTERVAL):
+            subject = "🚨 Security Alert: Suspicious Activity Detected"
+            alert_details = "\n".join([
+                f"- {alert['type']} (Confidence: {alert['confidence']:.2f}%)" 
+                for alert in alerts
+            ])
+            
+            message = f"""Security Alert from your camera system!
+
+Suspicious activity has been detected:
+
+{alert_details}
+
+The image has been saved to your S3 bucket.
+Image URL: {s3_url}
+
+This is an automated message from your security camera system.
+"""
+            try:
+                # Convert frame to base64
+                _, buffer = cv2.imencode('.jpg', frame)
+                image_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                response = requests.post(NOTIFY_ENDPOINT, json={
+                    'recipient_email': os.getenv('EMAIL_USER'),
+                    'subject': subject,
+                    'message': message,
+                    'image_data': image_base64
+                })
+                response.raise_for_status()
+                last_email_time = current_time
+                
+            except Exception as e:
+                print(f"Error sending email: {str(e)}")
+                
+    except Exception as e:
+        print(f"Error processing security alerts: {str(e)}")
 
 # Define a resource
 class HelloWorld(Resource):
@@ -317,6 +516,77 @@ class S3BucketDelete(Resource):
         except Exception as e:
             return {'error': f'Error deleting bucket: {str(e)}'}, 500
 
+class CameraControl(Resource):
+    def post(self):
+        """
+        Control the camera (start/stop monitoring).
+        Expects a JSON payload with 'action' field ('start' or 'stop').
+        """
+        try:
+            data = request.get_json(force=True)
+            action = data.get('action')
+            
+            if not action:
+                return {'error': 'Missing action parameter'}, 400
+                
+            global camera, is_monitoring, monitor_thread
+            
+            if action == 'start':
+                if is_monitoring:
+                    return {'error': 'Camera is already monitoring'}, 400
+                    
+                camera = cv2.VideoCapture(0)
+                if not camera.isOpened():
+                    return {'error': 'Could not open video device'}, 500
+                    
+                is_monitoring = True
+                monitor_thread = threading.Thread(target=monitor_camera)
+                monitor_thread.daemon = True
+                monitor_thread.start()
+                return {'success': True, 'message': 'Camera monitoring started'}, 200
+                
+            elif action == 'stop':
+                if not is_monitoring:
+                    return {'error': 'Camera is not monitoring'}, 400
+                    
+                is_monitoring = False
+                if monitor_thread:
+                    monitor_thread.join(timeout=1.0)
+                if camera:
+                    camera.release()
+                    camera = None
+                return {'success': True, 'message': 'Camera monitoring stopped'}, 200
+                
+            else:
+                return {'error': 'Invalid action. Use "start" or "stop"'}, 400
+                
+        except Exception as e:
+            return {'error': f'Error controlling camera: {str(e)}'}, 500
+
+    def get(self):
+        """
+        Get the current camera frame.
+        Returns the frame as a base64 encoded image.
+        """
+        try:
+            global last_frame, frame_lock
+            
+            with frame_lock:
+                if last_frame is None:
+                    return {'error': 'No frame available'}, 404
+                    
+                # Convert frame to JPEG
+                _, buffer = cv2.imencode('.jpg', last_frame)
+                frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                
+                return {
+                    'success': True,
+                    'frame': frame_base64
+                }, 200
+                
+        except Exception as e:
+            return {'error': f'Error getting camera frame: {str(e)}'}, 500
+
 # Add the resources to the API
 api.add_resource(HelloWorld, '/')
 api.add_resource(ImageAnalysis, '/analyze')
@@ -327,6 +597,7 @@ api.add_resource(SecurityAlert, '/db/alert')
 api.add_resource(DatabaseCleanup, '/db/cleanup')
 api.add_resource(S3UrlUpdate, '/db/s3url')
 api.add_resource(S3BucketDelete, '/s3/bucket/delete')
+api.add_resource(CameraControl, '/camera')
 
 if __name__ == '__main__':
     # Run the Flask app in debug mode for development purposes

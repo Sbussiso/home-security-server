@@ -9,6 +9,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from PIL import Image, ImageTk
 import threading
+import numpy as np
 
 load_dotenv()
 
@@ -24,6 +25,7 @@ DB_ALERT_ENDPOINT = f"{REST_API_URL}/db/alert"
 DB_CLEANUP_ENDPOINT = f"{REST_API_URL}/db/cleanup"
 DB_S3URL_ENDPOINT = f"{REST_API_URL}/db/s3url"
 S3_BUCKET_DELETE_ENDPOINT = f"{REST_API_URL}/s3/bucket/delete"
+CAMERA_CONTROL_ENDPOINT = f"{REST_API_URL}/camera"
 
 class SecurityCameraApp:
     def __init__(self, root):
@@ -33,7 +35,6 @@ class SecurityCameraApp:
         
         # Variables
         self.is_running = False
-        self.cap = None
         self.last_save_time = 0
         self.last_email_time = 0
         self.SAVE_INTERVAL = 20
@@ -87,12 +88,76 @@ class SecurityCameraApp:
         self.main_frame.columnconfigure(2, weight=1)
         self.main_frame.rowconfigure(0, weight=1)
         
-        # Initialize background subtractor
-        self.backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
+        # Start the video update loop
+        self.update_video_loop()
         
         # Clean up old images
         self.cleanup_db(days=30)
     
+    def update_video_loop(self):
+        if self.is_running:
+            try:
+                response = requests.get(CAMERA_CONTROL_ENDPOINT)
+                response.raise_for_status()
+                result = response.json()
+                
+                if result.get('success') and result.get('frame'):
+                    # Convert base64 frame to image
+                    frame_data = base64.b64decode(result['frame'])
+                    nparr = np.frombuffer(frame_data, np.uint8)
+                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    
+                    if frame is not None:
+                        # Convert frame for display
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frame_pil = Image.fromarray(frame_rgb)
+                        frame_tk = ImageTk.PhotoImage(frame_pil)
+                        
+                        # Update display
+                        self.video_label.config(image=frame_tk)
+                        self.video_label.image = frame_tk
+            except Exception as e:
+                self.add_alert(f"Error updating video: {str(e)}")
+        
+        # Schedule next update
+        self.root.after(100, self.update_video_loop)
+
+    def start_monitoring(self):
+        if not self.is_running:
+            try:
+                response = requests.post(CAMERA_CONTROL_ENDPOINT, json={'action': 'start'})
+                response.raise_for_status()
+                result = response.json()
+                
+                if result.get('success'):
+                    self.is_running = True
+                    self.start_button.config(state=tk.DISABLED)
+                    self.stop_button.config(state=tk.NORMAL)
+                    self.status_label.config(text="Monitoring Active")
+                    self.add_alert("Camera monitoring started")
+                else:
+                    self.add_alert(f"Failed to start monitoring: {result.get('error')}")
+            except Exception as e:
+                self.add_alert(f"Error starting monitoring: {str(e)}")
+
+    def stop_monitoring(self):
+        if self.is_running:
+            try:
+                response = requests.post(CAMERA_CONTROL_ENDPOINT, json={'action': 'stop'})
+                response.raise_for_status()
+                result = response.json()
+                
+                if result.get('success'):
+                    self.is_running = False
+                    self.start_button.config(state=tk.NORMAL)
+                    self.stop_button.config(state=tk.DISABLED)
+                    self.status_label.config(text="System Ready")
+                    self.add_alert("Camera monitoring stopped")
+                else:
+                    self.add_alert(f"Failed to stop monitoring: {result.get('error')}")
+            except Exception as e:
+                self.add_alert(f"Error stopping monitoring: {str(e)}")
+
     def self_destruct(self):
         """
         Emergency protocol to delete all data and shut down the system.
@@ -148,175 +213,6 @@ class SecurityCameraApp:
         except requests.exceptions.RequestException as e:
             self.add_alert(f"❌ Error during self-destruct: {str(e)}")
             messagebox.showerror("Error", f"Failed to complete self-destruct: {str(e)}")
-
-    def start_monitoring(self):
-        if not self.is_running:
-            self.is_running = True
-            self.start_button.config(state=tk.DISABLED)
-            self.stop_button.config(state=tk.NORMAL)
-            self.status_label.config(text="Monitoring Active")
-            
-            # Start camera in a separate thread
-            self.cap = cv2.VideoCapture(0)
-            if not self.cap.isOpened():
-                messagebox.showerror("Error", "Could not open video device")
-                self.stop_monitoring()
-                return
-            
-            # Start the monitoring loop
-            self.monitor_thread = threading.Thread(target=self.monitor_loop)
-            self.monitor_thread.daemon = True
-            self.monitor_thread.start()
-
-    def stop_monitoring(self):
-        if self.is_running:
-            self.is_running = False
-            self.start_button.config(state=tk.NORMAL)
-            self.stop_button.config(state=tk.DISABLED)
-            self.status_label.config(text="System Ready")
-            
-            if self.cap is not None:
-                self.cap.release()
-                self.cap = None
-
-    def monitor_loop(self):
-        while self.is_running:
-            ret, frame = self.cap.read()
-            if not ret:
-                self.status_label.config(text="Failed to grab frame")
-                break
-            
-            frame = cv2.resize(frame, (500, 500))
-            original_frame = frame.copy()
-            
-            # Process frame for motion detection
-            fgMask = self.backSub.apply(frame)
-            _, thresh = cv2.threshold(fgMask, 250, 255, cv2.THRESH_BINARY)
-            thresh = cv2.erode(thresh, None, iterations=2)
-            thresh = cv2.dilate(thresh, None, iterations=2)
-            
-            # Detect motion
-            contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            motion_detected = False
-            
-            for c in contours:
-                if cv2.contourArea(c) < 1500:
-                    continue
-                motion_detected = True
-                (x, y, w, h) = cv2.boundingRect(c)
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(frame, "Motion Detected", (10, 20),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            
-            # Convert frame for display
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_pil = Image.fromarray(frame_rgb)
-            frame_tk = ImageTk.PhotoImage(frame_pil)
-            
-            # Update display
-            self.video_label.config(image=frame_tk)
-            self.video_label.image = frame_tk
-            
-            # Process motion detection
-            if motion_detected:
-                current_time = time.time()
-                if current_time - self.last_save_time >= self.SAVE_INTERVAL:
-                    self.process_motion(original_frame)
-                    self.last_save_time = current_time
-            
-            # Update status
-            if motion_detected:
-                self.status_label.config(text="Motion Detected!")
-            else:
-                self.status_label.config(text="Monitoring Active")
-            
-            # Small delay to prevent high CPU usage
-            time.sleep(0.1)
-
-    def process_motion(self, frame):
-        # Generate filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"motion_{timestamp}.jpg"
-        
-        try:
-            # Save image to database
-            save_result = self.save_image_to_db(frame, filename)
-            if not save_result.get('success'):
-                self.add_alert(f"Failed to save image: {save_result.get('error')}")
-                return
-            
-            image_id = save_result.get('image_id')
-            
-            # Upload to S3
-            upload_result = self.upload_to_s3(frame, filename)
-            if upload_result.get('success'):
-                s3_url = upload_result['s3_url']
-                
-                # Update S3 URL in database
-                self.update_s3_url_in_db(image_id, s3_url)
-                
-                # Analyze image
-                analysis = self.analyze_image(s3_url)
-                if not analysis.get('error'):
-                    # Process security alerts
-                    if analysis['security_alerts']:
-                        self.process_security_alerts(image_id, analysis['security_alerts'], frame, s3_url)
-            else:
-                self.add_alert(f"Failed to upload to S3: {upload_result.get('error')}")
-                
-        except Exception as e:
-            self.add_alert(f"Error processing motion: {str(e)}")
-
-    def process_security_alerts(self, image_id, alerts, frame, s3_url):
-        current_time = time.time()
-        
-        # Add alerts to database
-        for alert in alerts:
-            alert_result = self.add_alert_to_db(image_id, alert['type'], alert['confidence'])
-            if not alert_result.get('success'):
-                self.add_alert(f"Failed to save alert: {alert_result.get('error')}")
-        
-        # Send email notification if needed
-        if ALERT_EMAIL and (current_time - self.last_email_time >= self.EMAIL_INTERVAL):
-            subject = "🚨 Security Alert: Suspicious Activity Detected"
-            alert_details = "\n".join([
-                f"- {alert['type']} (Confidence: {alert['confidence']:.2f}%)" 
-                for alert in alerts
-            ])
-            
-            message = f"""Security Alert from your camera system!
-
-Suspicious activity has been detected:
-
-{alert_details}
-
-The image has been saved to your S3 bucket.
-Image URL: {s3_url}
-
-This is an automated message from your security camera system.
-"""
-            try:
-                notification_result = self.send_notification(
-                    ALERT_EMAIL,
-                    subject,
-                    message,
-                    frame
-                )
-                
-                if notification_result.get('success'):
-                    self.add_alert(f"Security alert email sent to {ALERT_EMAIL}")
-                    self.last_email_time = current_time
-                else:
-                    self.add_alert(f"Failed to send email: {notification_result.get('error')}")
-            except Exception as e:
-                self.add_alert(f"Error sending email: {str(e)}")
-
-    def add_alert(self, message):
-        self.alerts_text.config(state=tk.NORMAL)
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.alerts_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.alerts_text.see(tk.END)
-        self.alerts_text.config(state=tk.DISABLED)
 
     def show_analytics(self):
         try:
@@ -466,6 +362,13 @@ This is an automated message from your security camera system.
                     self.add_alert(f"Cleaned up {deleted_count} old images from database")
         except requests.exceptions.RequestException as e:
             self.add_alert(f"Error cleaning up database: {str(e)}")
+
+    def add_alert(self, message):
+        self.alerts_text.config(state=tk.NORMAL)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.alerts_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.alerts_text.see(tk.END)
+        self.alerts_text.config(state=tk.DISABLED)
 
 if __name__ == '__main__':
     root = tk.Tk()
