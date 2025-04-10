@@ -1,7 +1,7 @@
 from flask import Flask, request
 from flask_restful import Resource, Api
 from rekognition import analyze_image
-from aws_s3 import upload_file
+from aws_s3 import upload_file, delete_bucket, s3_client
 from notifications import send_security_alert
 from database import (
     save_image, add_security_alert, save_temp_image_file,
@@ -283,6 +283,40 @@ class S3UrlUpdate(Resource):
         except Exception as e:
             return {'error': f'Error updating S3 URL: {str(e)}'}, 500
 
+class S3BucketDelete(Resource):
+    def post(self):
+        """
+        Emergency protocol to delete the entire S3 bucket and all its contents.
+        This is a destructive operation that cannot be undone.
+        
+        Expects a JSON payload with 'bucket_name' and 'confirmation' fields.
+        The confirmation field must be set to "CONFIRM_DELETE" to proceed.
+        """
+        try:
+            data = request.get_json(force=True)
+            bucket_name = data.get('bucket_name')
+            confirmation = data.get('confirmation')
+            
+            if not bucket_name or not confirmation:
+                return {'error': 'Missing bucket_name or confirmation'}, 400
+                
+            if confirmation != "CONFIRM_DELETE":
+                return {'error': 'Invalid confirmation code. This operation requires explicit confirmation.'}, 400
+
+            # Use the delete_bucket function with the imported s3_client
+            success, error = delete_bucket(bucket_name, s3_client)
+            
+            if success:
+                return {
+                    'success': True,
+                    'message': f'Bucket {bucket_name} and all its contents have been deleted'
+                }, 200
+            else:
+                return {'error': error}, 500
+
+        except Exception as e:
+            return {'error': f'Error deleting bucket: {str(e)}'}, 500
+
 # Add the resources to the API
 api.add_resource(HelloWorld, '/')
 api.add_resource(ImageAnalysis, '/analyze')
@@ -292,6 +326,7 @@ api.add_resource(DatabaseImage, '/db/image')
 api.add_resource(SecurityAlert, '/db/alert')
 api.add_resource(DatabaseCleanup, '/db/cleanup')
 api.add_resource(S3UrlUpdate, '/db/s3url')
+api.add_resource(S3BucketDelete, '/s3/bucket/delete')
 
 if __name__ == '__main__':
     # Run the Flask app in debug mode for development purposes

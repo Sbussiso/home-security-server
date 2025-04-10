@@ -23,6 +23,7 @@ DB_IMAGE_ENDPOINT = f"{REST_API_URL}/db/image"
 DB_ALERT_ENDPOINT = f"{REST_API_URL}/db/alert"
 DB_CLEANUP_ENDPOINT = f"{REST_API_URL}/db/cleanup"
 DB_S3URL_ENDPOINT = f"{REST_API_URL}/db/s3url"
+S3_BUCKET_DELETE_ENDPOINT = f"{REST_API_URL}/s3/bucket/delete"
 
 class SecurityCameraApp:
     def __init__(self, root):
@@ -61,6 +62,9 @@ class SecurityCameraApp:
         
         self.analytics_button = ttk.Button(self.control_frame, text="View Analytics", command=self.show_analytics)
         self.analytics_button.grid(row=0, column=2, padx=5)
+
+        self.self_destruct_button = ttk.Button(self.control_frame, text="Self Destruct", command=self.self_destruct)
+        self.self_destruct_button.grid(row=0, column=3, padx=5)
         
         # Create status frame
         self.status_frame = ttk.LabelFrame(self.main_frame, text="Status", padding="5")
@@ -88,6 +92,62 @@ class SecurityCameraApp:
         
         # Clean up old images
         self.cleanup_db(days=30)
+    
+    def self_destruct(self):
+        """
+        Emergency protocol to delete all data and shut down the system.
+        This is a destructive operation that cannot be undone.
+        """
+        # Confirm with user before proceeding
+        if not messagebox.askyesno("⚠️ WARNING: Self Destruct", 
+            "This will delete ALL data including:\n"
+            "- All images in S3 bucket\n"
+            "- All database records\n"
+            "- All security alerts\n\n"
+            "This action cannot be undone!\n\n"
+            "Are you sure you want to proceed?"):
+            return
+
+        try:
+            # Delete S3 bucket and all its contents
+            response = requests.post(S3_BUCKET_DELETE_ENDPOINT, json={
+                'bucket_name': 'computer-vision-analysis',
+                'confirmation': 'CONFIRM_DELETE'
+            })
+            response.raise_for_status()
+            result = response.json()
+            
+            if result.get('success'):
+                self.add_alert("✅ S3 bucket and all contents deleted successfully")
+            else:
+                self.add_alert(f"❌ Failed to delete S3 bucket: {result.get('error')}")
+                return
+
+            # Clean up database
+            cleanup_response = requests.post(DB_CLEANUP_ENDPOINT, params={'days': 0})
+            cleanup_response.raise_for_status()
+            cleanup_result = cleanup_response.json()
+            
+            if cleanup_result.get('success'):
+                deleted_count = cleanup_result.get('deleted_count', 0)
+                self.add_alert(f"✅ Database cleaned up: {deleted_count} records deleted")
+            else:
+                self.add_alert(f"❌ Failed to clean up database: {cleanup_result.get('error')}")
+
+            # Stop monitoring if active
+            self.stop_monitoring()
+            
+            # Show final confirmation
+            messagebox.showinfo("Self Destruct Complete", 
+                "All data has been deleted and the system has been shut down.\n"
+                "Please restart the application to use it again.")
+            
+            # Close the application
+            self.root.destroy()
+
+        except requests.exceptions.RequestException as e:
+            self.add_alert(f"❌ Error during self-destruct: {str(e)}")
+            messagebox.showerror("Error", f"Failed to complete self-destruct: {str(e)}")
 
     def start_monitoring(self):
         if not self.is_running:
