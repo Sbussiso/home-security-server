@@ -116,6 +116,7 @@ async def main(page: ft.Page):
 
     async def stop_monitoring(e):
         nonlocal is_running, video_update_task
+        is_internal_call = e is None
         if is_running:
             stop_button.disabled = True
             await add_alert(page, "Attempting to stop monitoring...")
@@ -133,7 +134,8 @@ async def main(page: ft.Page):
             status_label.value = "System Ready"
             video_image.src_base64 = None
             await add_alert(page, "Camera monitoring stopped.")
-            video_image.page.update()
+            if not is_internal_call:
+                video_image.page.update()
 
             # Now attempt to inform the backend API (fire and forget for now)
             async def send_stop_request():
@@ -150,12 +152,12 @@ async def main(page: ft.Page):
             status_label.value = "System Ready"
             video_image.src_base64 = None
             await add_alert(page, "Camera monitoring not active. Cannot stop.")
-            video_image.page.update()
+            if not is_internal_call:
+                video_image.page.update()
 
     async def show_analytics(e):
-        await add_alert(page, "Analytics feature not yet implemented.")
-        await page.update()
-        pass
+        # Navigate to the analytics view
+        page.go("/analytics")
 
     async def add_alert(page_ref: ft.Page, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -249,7 +251,7 @@ async def main(page: ft.Page):
         ]
         page.dialog = self_destruct_dialog
         self_destruct_dialog.open = True
-        page.update()
+        await page.update() # await required for dialog changes
 
     # --- Control Buttons ---
     start_button = ft.ElevatedButton("Start Monitoring", on_click=start_monitoring, icon=ft.Icons.PLAY_ARROW)
@@ -273,7 +275,7 @@ async def main(page: ft.Page):
                 alignment=ft.MainAxisAlignment.START
             ),
             ft.Container(height=10), # Spacer
-            ft.Text("Status", style=ft.TextThemeStyle.TITLE_MEDIUM),
+            ft.Text("Status", theme_style=ft.TextThemeStyle.TITLE_MEDIUM),
             status_label,
         ],
         expand=True,
@@ -295,16 +297,135 @@ async def main(page: ft.Page):
         spacing=10
     )
 
-    # Add layout to page
-    page.add(
-        ft.Row(
-            [
-                ft.Container(left_column, padding=10, expand=2), # Give left column more weight initially
-                ft.Container(right_column, padding=10, expand=1)
-            ],
-            expand=True
+    # --- Routing and Views --- #
+
+    def build_main_view():
+        """Builds the main view with live feed and controls."""
+        return ft.View(
+            "/",
+            [   ft.AppBar(title=ft.Text("Security Camera"), bgcolor=ft.Colors.ON_SURFACE_VARIANT),
+                ft.Row(
+                    [
+                        ft.Container(left_column, padding=10),
+                        ft.VerticalDivider(),
+                        ft.Container(right_column, padding=10, expand=True)
+                    ],
+                    expand=True,
+                    vertical_alignment=ft.CrossAxisAlignment.START
+                )
+            ]
         )
-    )
+
+    async def build_analytics_view():
+        """Builds the analytics view by fetching and formatting data."""
+        view_content = ft.Column([
+            ft.ProgressRing(),
+            ft.Text("Loading analytics data...")
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+
+        view = ft.View(
+            "/analytics",
+            [
+                ft.AppBar(title=ft.Text("Analytics"), bgcolor=ft.Colors.ON_SURFACE_VARIANT, leading=ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _: page.go("/"))),
+                ft.Container(view_content, padding=20, expand=True)
+            ],
+            scroll=ft.ScrollMode.ADAPTIVE # Allow scrolling for the whole view
+        )
+
+        # Fetch data asynchronously after returning the initial view structure
+        async def fetch_and_update():
+            try:
+                print("Attempting to fetch analytics data for view...")
+                response = await asyncio.to_thread(requests.get, DB_IMAGE_ENDPOINT, params={'limit': 1000}, timeout=15)
+                response.raise_for_status()
+                result = response.json()
+                print(f"API Response Raw: {result}")
+
+                if 'error' in result or 'detail' in result:
+                    api_error_msg = result.get('error') or result.get('detail')
+                    print(f"API returned error: {api_error_msg}")
+                    view_content.controls = [ft.Text(f"API Error: {api_error_msg}")]
+                else:
+                    images = result.get('images', [])
+                    print(f"Extracted images (count: {len(images)}): {images[:2]}...")
+
+                    if not images:
+                        print("No images found in API response.")
+                        view_content.controls = [ft.Text("No images found in the database.")]
+                    else:
+                        print("Processing image data for view...")
+                        total_images = len(images)
+                        images_with_alerts = sum(1 for img in images if img['alert_count'] > 0)
+                        alert_rate = (images_with_alerts / total_images) * 100 if total_images > 0 else 0
+
+                        summary_text = (
+                            f"Total Images: {total_images}\n"
+                            f"Images with Security Alerts: {images_with_alerts}\n"
+                            f"Alert Rate: {alert_rate:.2f}%"
+                        )
+
+                        recent_images_text = "\n----- 10 Most Recent Images -----\n"
+                        for i, img in enumerate(images[:10]):
+                            alert_status = f"🚨 {img['alert_count']} alerts" if img['alert_count'] > 0 else "No alerts"
+                            recent_images_text += f"{i+1}. [{img['timestamp']}] {img['filename']} - {alert_status}\n"
+
+                        recent_alerts_text = ""
+                        if images_with_alerts > 0:
+                            recent_alerts_text += "\n----- Recent Security Alerts -----\n"
+                            alert_count = 0
+                            for img in images:
+                                if img['alert_count'] > 0:
+                                    recent_alerts_text += f"Image: {img['filename']} - {img['timestamp']}\n"
+                                    if img['s3_url']:
+                                        recent_alerts_text += f"  S3 URL: {img['s3_url']}\n"
+                                    recent_alerts_text += f"  Total Alerts: {img['alert_count']}\n"
+                                    recent_alerts_text += "-" * 40 + "\n"
+                                    alert_count += 1
+                                    if alert_count >= 10:
+                                        break
+
+                        view_content.controls = [
+                            ft.Text(summary_text, selectable=True),
+                            ft.Divider(),
+                            ft.Text(recent_images_text, selectable=True),
+                            ft.Divider(),
+                            ft.Text(recent_alerts_text, selectable=True),
+                        ]
+
+            except requests.exceptions.RequestException as req_e:
+                error_msg = f"Error accessing database: {str(req_e)}"
+                print(f"RequestException: {error_msg}")
+                view_content.controls = [ft.Text(error_msg)]
+            except Exception as exc:
+                error_msg = f"An unexpected error occurred: {str(exc)}"
+                print(f"Generic Exception: {error_msg}")
+                import traceback
+                traceback.print_exc()
+                view_content.controls = [ft.Text(error_msg)]
+
+            # Update the view content
+            # Check if the current view is still the analytics view before updating
+            if page.route == "/analytics":
+                print("Updating analytics view content...")
+                page.update() # Use synchronous update
+            else:
+                print("Route changed before analytics data fetched, not updating view.")
+
+        # Schedule the data fetching task
+        asyncio.create_task(fetch_and_update())
+        return view # Return the view with the loading indicator
+
+    async def route_change(route):
+        print(f"Route change requested: {page.route}")
+        page.views.clear()
+        if page.route == "/analytics":
+            page.views.append(await build_analytics_view()) # Build analytics view
+        else:
+            # Default to main view for "/" or any other route
+            page.views.append(build_main_view())
+        page.update() # Use synchronous update for view changes
+
+    page.on_route_change = route_change
 
     # Initial cleanup call (run in background thread)
     async def run_initial_cleanup(page_ref: ft.Page):
@@ -323,5 +444,8 @@ async def main(page: ft.Page):
 
     # Don't block startup, run cleanup in background
     asyncio.create_task(run_initial_cleanup(page))
+
+    # Initial route
+    page.go(page.route) # Trigger the initial route change to display the main view
 
 ft.app(target=main)

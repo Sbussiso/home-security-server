@@ -56,6 +56,40 @@ s3_client_sync = boto3.client(
     aws_secret_access_key=os.getenv('AWS_SECRET_KEY')
 )
 
+# --- S3 Helper Functions (adapted from aws_s3.py) ---
+def bucket_exists(bucket_name, s3_client):
+    try:
+        s3_client.head_bucket(Bucket=bucket_name)
+        print(f"Bucket '{bucket_name}' exists.") # Added print
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            print(f"Bucket '{bucket_name}' does not exist.") # Added print
+            return False
+        else:
+            print(f"Error checking bucket '{bucket_name}': {e}") # Added print
+            raise
+
+def create_bucket(bucket_name, s3_client, region=None):
+    try:
+        if region is None:
+             region = os.getenv('AWS_REGION', 'us-east-1') # Default if not provided
+
+        if region == 'us-east-1':
+            s3_client.create_bucket(Bucket=bucket_name)
+        else:
+            s3_client.create_bucket(
+                Bucket=bucket_name,
+                CreateBucketConfiguration={'LocationConstraint': region}
+            )
+        print(f'Bucket "{bucket_name}" created successfully in region {region}.')
+    except ClientError as e:
+        print(f"Error creating bucket '{bucket_name}': {e}")
+        return False
+    return True
+
+# --- End S3 Helper Functions ---
+
 async def init_async_clients():
     global async_session
     try:
@@ -128,6 +162,20 @@ class S3BucketDelete(BaseModel):
 
 def sync_upload_to_s3(file_path: str, bucket_name: str, filename: str):
     """Synchronously upload a file to S3"""
+    # Ensure the bucket exists before uploading
+    try:
+        if not bucket_exists(bucket_name, s3_client_sync):
+            print(f"Attempting to create bucket '{bucket_name}'...")
+            if not create_bucket(bucket_name, s3_client_sync):
+                error_msg = f"Failed to create bucket '{bucket_name}'. Cannot upload."
+                print(error_msg)
+                return False, error_msg, None
+    except Exception as check_create_e:
+        # Catch errors during bucket check/creation
+        error_msg = f"Error checking/creating bucket '{bucket_name}': {str(check_create_e)}"
+        print(error_msg)
+        return False, error_msg, None
+
     try:
         # Upload the file
         s3_client_sync.upload_file(file_path, bucket_name, filename)
@@ -145,7 +193,16 @@ def sync_upload_to_s3(file_path: str, bucket_name: str, filename: str):
         return True, None, presigned_url
     except Exception as e:
         print(f"Error uploading to S3: {str(e)}")
-        return False, str(e), None
+        
+        # Add specific check for NoSuchBucket during upload itself (redundant but safe)
+        if isinstance(e, ClientError) and e.response['Error']['Code'] == 'NoSuchBucket':
+             error_msg = f"Failed to upload {filename} to S3: Bucket '{bucket_name}' does not exist (check permissions or region)."
+             print(error_msg)
+             return False, error_msg, None
+        else:
+            error_msg = f"Error uploading {filename} to S3: {str(e)}"
+            print(error_msg)
+            return False, error_msg, None
 
 async def async_save_image_to_db(image_data: np.ndarray, filename: str):
     """Asynchronously save image to database"""
