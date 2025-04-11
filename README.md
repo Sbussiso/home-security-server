@@ -1,14 +1,14 @@
 # Home Security Camera System
 
-This project is an open-source, local home security camera system that leverages computer vision and cloud technologies to monitor, analyze, and notify users of potential security threats. It combines a FastAPI web application, SQLite database, AWS Rekognition, and email notifications to provide a robust and scalable solution for home security.
+The Home Security Camera System is an open-source, self-hosted solution designed to provide monitoring and analysis of security threats using computer vision and cloud technologies. This system leverages a FastAPI web application, SQLite database, AWS Rekognition, and email notifications to deliver a robust and scalable home security experience.
 
 ## Introduction
 
-The home security camera system is designed to continuously monitor a video feed from a connected camera. When motion is detected, it captures images, uploads them to an AWS S3 bucket, and analyzes them using AWS Rekognition for potential security threats such as people, vehicles, weapons, or packages. If any threats are detected, the system sends an email notification with the relevant details and a link to the uploaded image.
+The primary goal of this project is to offer users a convenient open source solution to home security. By running locally, users maintain a level of control over their data while benefiting from advanced computer vision capabilities powered by AWS Rekognition.
 
-The system also provides a RESTful API for managing the camera, analyzing images, sending notifications, and interacting with the database. The database stores captured images, detected security alerts, and other metadata for future reference and analysis.
+The system continuously monitors a video feed from a connected camera, capturing images when motion is detected. These images are then uploaded to an AWS S3 bucket and analyzed by AWS Rekognition for potential security threats such as people, vehicles, weapons, or packages. If any threats are detected, the system sends an email notification with relevant details and a link to the uploaded image.
 
-This project aims to provide an open-source, self-hosted solution for home security, allowing users to monitor their premises without relying on third-party services or cloud-based solutions. By leveraging AWS services and running locally, users can maintain control over their data while benefiting from advanced computer vision capabilities.
+Additionally, the system provides a RESTful API for managing the camera, analyzing images, sending notifications, and interacting with the SQLite database, which stores captured images, security alerts, and associated metadata.
 
 ## Features
 
@@ -24,37 +24,38 @@ This project aims to provide an open-source, self-hosted solution for home secur
 
 ## Installation
 
+### Prerequisites
+
+- Python 3.7 or higher
+- A webcam or IP camera connected to your system
+- An AWS account with access keys (for AWS Rekognition and S3)
+- An email account for sending notifications
+
+### Setup Wizard
+
+The Home Security Camera System includes a user-friendly setup wizard to simplify the installation and configuration process. Follow these steps to get started:
+\
+make sure python is installed on your operating system.
+
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/your-username/home-security-camera.git
-cd home-security-camera
+git clone https://github.com/Sbussiso/home-security-server.git
+cd home-security-server
 ```
 
-2. Create a virtual environment and install dependencies:
+2. Run the setup wizard:
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-pip install -r requirements.txt
+python setup_wizard.py
 ```
 
-3. Set up environment variables:
+The setup wizard will guide you through the following steps:
 
-Create a `.env` file in the project root directory with the following variables:
+- **Environment Setup**: The wizard will check your Python version and install the necessary dependencies. It will also create the required directories for the project.
+- **Configuration**: The wizard will prompt you to enter your AWS credentials (access key and secret key), email configuration (email address, password, SMTP server, and port), and database configuration (database path, master username, and master password).
 
-```
-EMAIL_USER=your-email@example.com
-EMAIL_PASSWORD=your-email-password
-SMTP_SERVER=your-smtp-server
-SMTP_PORT=your-smtp-port
-AWS_ACCESS_KEY=your-aws-access-key
-AWS_SECRET_KEY=your-aws-secret-key
-AWS_REGION=your-aws-region
-DB_PATH=path/to/your/database.db
-```
-
-Replace the placeholders with your actual values.
+After completing the setup wizard, a `.env` file will be created with your configuration settings.
 
 4. Initialize the database:
 
@@ -62,7 +63,7 @@ Replace the placeholders with your actual values.
 python database.py
 ```
 
-This will create the SQLite database file specified in the `DB_PATH` environment variable.
+This step will create the SQLite database file specified in the `DB_PATH` environment variable.
 
 ## Usage
 
@@ -72,7 +73,7 @@ This will create the SQLite database file specified in the `DB_PATH` environment
 uvicorn app:app --reload
 ```
 
-The server will be accessible at `http://localhost:8000`.
+The server will be accessible at `http://localhost:5000`.
 
 2. Use the provided API endpoints to control the camera, analyze images, send notifications, and manage the database. You can use tools like Postman or cURL to interact with the API.
 
@@ -81,34 +82,28 @@ Here are some example API requests:
 - Start camera monitoring:
 
 ```bash
-curl -X POST http://localhost:8000/camera -H "Content-Type: application/json" -d '{"action": "start"}'
+curl -X POST http://localhost:5000/camera -H "Content-Type: application/json" -d '{"action": "start"}'
 ```
 
 - Stop camera monitoring:
 
 ```bash
-curl -X POST http://localhost:8000/camera -H "Content-Type: application/json" -d '{"action": "stop"}'
+curl -X POST http://localhost:5000/camera -H "Content-Type: application/json" -d '{"action": "stop"}'
 ```
 
 - Analyze an image:
 
 ```bash
-curl -X POST http://localhost:8000/analyze -H "Content-Type: application/json" -d '{"image_data": "base64-encoded-image-data", "filename": "image.jpg"}'
+curl -X POST http://localhost:5000/analyze -H "Content-Type: application/json" -d '{"image_data": "base64-encoded-image-data", "filename": "image.jpg"}'
 ```
 
 - Send a notification:
 
 ```bash
-curl -X POST http://localhost:8000/notify -H "Content-Type: application/json" -d '{"recipient_email": "recipient@example.com", "subject": "Security Alert", "message": "Suspicious activity detected."}'
+curl -X POST http://localhost:5000/notify -H "Content-Type: application/json" -d '{"recipient_email": "recipient@example.com", "subject": "Security Alert", "message": "Suspicious activity detected."}'
 ```
 
 - Clean up old images from the database:
 
 ```bash
-curl -X POST http://localhost:8000/db/cleanup?days=30
-```
-
-- Get recent images from the database:
-
-```bash
-curl -X GET http://localhost:8000/db/
+curl -X POST http://localhost:5000/db/cleanup?days
