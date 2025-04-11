@@ -93,7 +93,8 @@ else:
 
 def upload_file(file_name, bucket_name, object_name=None):
     """
-    Upload a file to an S3 bucket and return a pre-signed URL
+    Upload a file to an S3 bucket and return a pre-signed URL.
+    If the bucket doesn't exist, it will be created automatically.
 
     Parameters:
         file_name (str): Path to the file to upload
@@ -113,6 +114,13 @@ def upload_file(file_name, bucket_name, object_name=None):
         # Check if file exists locally
         if not os.path.exists(file_name):
             return False, f"File {file_name} does not exist locally", None
+
+        # Check if bucket exists, if not create it
+        if not bucket_exists(bucket_name, s3_client):
+            print(f"Bucket '{bucket_name}' does not exist. Creating it now...")
+            if not create_bucket(bucket_name, s3_client, region):
+                return False, f"Failed to create bucket '{bucket_name}'", None
+            print(f"Bucket '{bucket_name}' created successfully")
 
         # Upload the file
         s3_client.upload_file(file_name, bucket_name, object_name)
@@ -139,3 +147,43 @@ def upload_file(file_name, bucket_name, object_name=None):
 
 
 
+def delete_bucket(bucket_name, s3_client):
+    """
+    Delete all objects in the bucket and then delete the bucket itself.
+    This is a destructive operation that cannot be undone.
+
+    Parameters:
+        bucket_name (str): The name of the bucket to delete
+        s3_client (boto3.client): A boto3 S3 client
+
+    Returns:
+        bool: True if bucket was successfully deleted, False otherwise
+        str: Error message if deletion failed, None if successful
+    """
+    try:
+        # First, delete all objects in the bucket
+        print(f"Deleting all objects in bucket '{bucket_name}'...")
+        
+        # List all objects in the bucket
+        paginator = s3_client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket_name):
+            if 'Contents' in page:
+                # Delete all objects in the current page
+                delete_keys = {'Objects': [{'Key': obj['Key']} for obj in page['Contents']]}
+                s3_client.delete_objects(Bucket=bucket_name, Delete=delete_keys)
+                print(f"Deleted {len(page['Contents'])} objects from bucket '{bucket_name}'")
+
+        # Now delete the bucket itself
+        print(f"Deleting bucket '{bucket_name}'...")
+        s3_client.delete_bucket(Bucket=bucket_name)
+        print(f"Bucket '{bucket_name}' successfully deleted")
+        return True, None
+        
+    except ClientError as e:
+        error_message = f"Error deleting bucket '{bucket_name}': {str(e)}"
+        print(error_message)
+        return False, error_message
+    except Exception as e:
+        error_message = f"Unexpected error deleting bucket '{bucket_name}': {str(e)}"
+        print(error_message)
+        return False, error_message
