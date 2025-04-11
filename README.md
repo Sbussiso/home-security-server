@@ -1,12 +1,14 @@
-# Security Camera System
+# Home Security Camera System
 
-This project is a comprehensive security camera system that leverages computer vision and cloud technologies to monitor, analyze, and notify users of potential security threats. It combines a FastAPI web application, SQLite database, AWS Rekognition, and email notifications to provide a robust and scalable solution.
+This project is an open-source, local home security camera system that leverages computer vision and cloud technologies to monitor, analyze, and notify users of potential security threats. It combines a FastAPI web application, SQLite database, AWS Rekognition, and email notifications to provide a robust and scalable solution for home security.
 
 ## Introduction
 
-The security camera system is designed to continuously monitor a video feed from a connected camera. When motion is detected, it captures images, uploads them to an AWS S3 bucket, and analyzes them using AWS Rekognition for potential security threats such as people, vehicles, weapons, or packages. If any threats are detected, the system sends an email notification with the relevant details and a link to the uploaded image.
+The home security camera system is designed to continuously monitor a video feed from a connected camera. When motion is detected, it captures images, uploads them to an AWS S3 bucket, and analyzes them using AWS Rekognition for potential security threats such as people, vehicles, weapons, or packages. If any threats are detected, the system sends an email notification with the relevant details and a link to the uploaded image.
 
 The system also provides a RESTful API for managing the camera, analyzing images, sending notifications, and interacting with the database. The database stores captured images, detected security alerts, and other metadata for future reference and analysis.
+
+This project aims to provide an open-source, self-hosted solution for home security, allowing users to monitor their premises without relying on third-party services or cloud-based solutions. By leveraging AWS services and running locally, users can maintain control over their data while benefiting from advanced computer vision capabilities.
 
 ## Features
 
@@ -18,14 +20,15 @@ The system also provides a RESTful API for managing the camera, analyzing images
 - AWS S3 integration for storing and retrieving captured images
 - Background tasks for asynchronous processing
 - Modular and extensible design
+- Open-source and self-hosted for privacy and control
 
 ## Installation
 
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/your-username/security-camera-system.git
-cd security-camera-system
+git clone https://github.com/your-username/home-security-camera.git
+cd home-security-camera
 ```
 
 2. Create a virtual environment and install dependencies:
@@ -108,15 +111,4 @@ curl -X POST http://localhost:8000/db/cleanup?days=30
 - Get recent images from the database:
 
 ```bash
-curl -X GET http://localhost:8000/db/image?limit=10
-```
-
-For more detailed information on available endpoints and their usage, refer to the API documentation or the source code.
-
-## Contributing
-
-Contributions to this project are welcome! If you find any issues or have suggestions for improvements, please open an issue or submit a pull request.
-
-When contributing, please follow these guidelines:
-
-1. Fork the repository and create a new branch for your feature or bug
+curl -X GET http://localhost:8000/db/
