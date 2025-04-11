@@ -20,6 +20,7 @@ NOTIFY_ENDPOINT = f"{REST_API_URL}/notify"
 DB_IMAGE_ENDPOINT = f"{REST_API_URL}/db/image"
 DB_ALERT_ENDPOINT = f"{REST_API_URL}/db/alert"
 DB_CLEANUP_ENDPOINT = f"{REST_API_URL}/db/cleanup"
+DB_DELETE_ENDPOINT = f"{REST_API_URL}/db/delete-file"
 DB_S3URL_ENDPOINT = f"{REST_API_URL}/db/s3url"
 S3_BUCKET_DELETE_ENDPOINT = f"{REST_API_URL}/s3/bucket/delete"
 CAMERA_CONTROL_ENDPOINT = f"{REST_API_URL}/camera"
@@ -158,6 +159,10 @@ async def main(page: ft.Page):
     async def show_analytics(e):
         # Navigate to the analytics view
         page.go("/analytics")
+        
+    async def show_self_destruct(e):
+        # Navigate to the self destruct view
+        page.go("/self-destruct")
 
     async def add_alert(page_ref: ft.Page, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -169,89 +174,153 @@ async def main(page: ft.Page):
         if alerts_list.page:
             page_ref.update()
 
-    # --- Self Destruct Dialog Logic ---
-
-    # Define the dialog instance outside the functions that use it
-    self_destruct_dialog = ft.AlertDialog(
-        modal=True,
-        title=ft.Text("⚠️ WARNING: Self Destruct"),
-        content=ft.Text(
-            "This will delete ALL data including:\n"
-            "- All images in S3 bucket\n"
-            "- All database records\n"
-            "- All security alerts\n\n"
-            "This action cannot be undone!\n\n"
-            "Are you sure you want to proceed?"
-        ),
-        actions_alignment=ft.MainAxisAlignment.END,
-        # Actions will be assigned in open_self_destruct_dialog
-    )
-
-    async def handle_confirm_destruct(e):
-        """Handles the confirmation action of the self-destruct dialog."""
-        await add_alert(page, "Self-destruct sequence initiated...")
-        # Close dialog first
-        self_destruct_dialog.open = False
+    # --- Self Destruct Implementation ---
+    async def perform_self_destruct(e=None):
+        """Performs the actual self-destruct operations"""
+        print("perform_self_destruct function started")
+        # Show progress and status on the self-destruct page
+        self_destruct_status.value = "Self-destruct sequence initiated..."
+        self_destruct_progress.visible = True
+        self_destruct_confirm_btn.disabled = True
+        self_destruct_cancel_btn.disabled = True
         page.update()
-
-        # --- Add API call logic here ---
+        
+        # Track success/failure
+        success = True
+        error_details = []
+        
+        # Step 1: Delete S3 bucket
+        self_destruct_status.value = "Deleting S3 bucket..."
+        page.update()
+        await add_alert(page, "Deleting S3 bucket...")
         try:
-            # 1. Delete S3 bucket
-            await add_alert(page, "Deleting S3 bucket...")
-            response_s3 = await asyncio.to_thread(requests.post, S3_BUCKET_DELETE_ENDPOINT, json={
-                'bucket_name': 'computer-vision-analysis', # Make this configurable?
-                'confirmation': 'CONFIRM_DELETE'
-            }, timeout=60) # Longer timeout for bucket deletion
-            response_s3.raise_for_status()
-            result_s3 = response_s3.json()
-            if result_s3.get('success'):
+            print("Attempting to delete S3 bucket...")
+            response = await asyncio.to_thread(
+                requests.post, 
+                S3_BUCKET_DELETE_ENDPOINT, 
+                json={
+                    'bucket_name': 'computer-vision-analysis',
+                    'confirmation': 'CONFIRM_DELETE'
+                }, 
+                timeout=60
+            )
+            print(f"S3 bucket deletion response status: {response.status_code}")
+            response.raise_for_status()
+            result = response.json()
+            print(f"S3 bucket deletion result: {result}")
+            
+            if result.get('success'):
+                print("S3 bucket deleted successfully")
                 await add_alert(page, "✅ S3 bucket deleted.")
             else:
-                await add_alert(page, f"❌ Failed to delete S3 bucket: {result_s3.get('detail', 'Unknown error')}")
-                # Decide whether to proceed if S3 fails
+                msg = f"⚠️ Failed to delete S3 bucket: {result.get('detail', 'Unknown error')}"
+                print(msg)
+                await add_alert(page, msg)
+                error_details.append(msg)
+                success = False
+        except Exception as e:
+            msg = f"❌ Error during S3 deletion: {str(e)}"
+            print(f"Exception during S3 deletion: {str(e)}")
+            await add_alert(page, msg)
+            error_details.append(msg)
+            success = False
 
-            # 2. Clean up database (delete all)
-            await add_alert(page, "Cleaning up database...")
-            response_db = await asyncio.to_thread(requests.post, DB_CLEANUP_ENDPOINT, params={'days': 0}, timeout=30)
-            response_db.raise_for_status()
-            result_db = response_db.json()
-            if result_db.get('success'):
-                count = result_db.get('deleted_count', 0)
+        # Step 2: Clean database
+        self_destruct_status.value = "Cleaning up database..."
+        page.update()
+        await add_alert(page, "Cleaning up database...")
+        try:
+            print("Attempting to clean database...")
+            response = await asyncio.to_thread(
+                requests.post, 
+                DB_CLEANUP_ENDPOINT, 
+                params={'days': 0}, 
+                timeout=30
+            )
+            print(f"DB cleanup response status: {response.status_code}")
+            response.raise_for_status()
+            result = response.json()
+            print(f"DB cleanup result: {result}")
+            
+            if result.get('success'):
+                count = result.get('deleted_count', 0)
+                print(f"Database cleaned, {count} records deleted")
                 await add_alert(page, f"✅ Database cleaned: {count} records deleted.")
             else:
-                 await add_alert(page, f"❌ Failed to clean database: {result_db.get('detail', 'Unknown error')}")
+                msg = f"⚠️ Failed to clean database: {result.get('detail', 'Unknown error')}"
+                print(msg)
+                await add_alert(page, msg)
+                error_details.append(msg)
+                success = False
+        except Exception as e:
+            msg = f"❌ Error during database cleanup: {str(e)}"
+            print(f"Exception during database cleanup: {str(e)}")
+            await add_alert(page, msg)
+            error_details.append(msg)
+            success = False
 
-            # 3. Stop monitoring if active
-            if is_running:
-                await stop_monitoring(None) # Pass None for event arg if called internally
-
-            await add_alert(page, "Self-destruct complete. Closing application.")
-            await page.update() # Show final alert
-            await asyncio.sleep(3) # Allow user to see final message
-            await page.window_close_async() # Close the app window
-
-        except Exception as sd_e:
-            await add_alert(page, f"❌ Error during self-destruct: {str(sd_e)}")
-            # Ensure dialog is closed even on error
-            self_destruct_dialog.open = False
-            page.update()
-
-    async def handle_cancel_destruct(e):
-        """Handles the cancellation action of the self-destruct dialog."""
-        self_destruct_dialog.open = False
+        # Step 3: Delete database file
+        self_destruct_status.value = "Deleting database file..."
         page.update()
-        await add_alert(page, "Self-destruct cancelled.")
+        await add_alert(page, "Deleting database file...")
+        try:
+            print("Attempting to delete database file...")
+            response = await asyncio.to_thread(
+                requests.post, 
+                DB_DELETE_ENDPOINT, 
+                timeout=10
+            )
+            print(f"DB file deletion response status: {response.status_code}")
+            response.raise_for_status()
+            result = response.json()
+            print(f"DB file deletion result: {result}")
+            
+            if result.get('success'):
+                print("Database file deleted successfully")
+                await add_alert(page, "✅ Database file deleted.")
+            else:
+                msg = f"⚠️ Failed to delete database file: {result.get('detail', 'Unknown error')}"
+                print(msg)
+                await add_alert(page, msg)
+                error_details.append(msg)
+                success = False
+        except Exception as e:
+            msg = f"❌ Error deleting database file: {str(e)}"
+            print(f"Exception during database file deletion: {str(e)}")
+            await add_alert(page, msg)
+            error_details.append(msg)
+            success = False
 
-    async def open_self_destruct_dialog(e):
-        """Assigns actions and opens the self-destruct dialog."""
-        # Assign handlers just before opening
-        self_destruct_dialog.actions = [
-            ft.TextButton("Confirm Delete", on_click=handle_confirm_destruct, style=ft.ButtonStyle(color=ft.Colors.RED)),
-            ft.TextButton("Cancel", on_click=handle_cancel_destruct),
-        ]
-        page.dialog = self_destruct_dialog
-        self_destruct_dialog.open = True
-        await page.update() # await required for dialog changes
+        # Step 4: Stop monitoring if running
+        if is_running:
+            self_destruct_status.value = "Stopping camera monitoring..."
+            page.update()
+            await add_alert(page, "Stopping camera monitoring...")
+            try:
+                print("Attempting to stop monitoring...")
+                await stop_monitoring(None)
+                print("Monitoring stopped successfully")
+            except Exception as e:
+                msg = f"❌ Error stopping monitoring: {str(e)}"
+                print(f"Exception during monitoring stop: {str(e)}")
+                await add_alert(page, msg)
+                error_details.append(msg)
+                success = False
+
+        # Update final status
+        if success:
+            self_destruct_status.value = "✅ Self-destruct sequence completed successfully."
+            await add_alert(page, "✅ Self-destruct sequence completed successfully.")
+            print("Self-destruct completed successfully")
+        else:
+            self_destruct_status.value = "⚠️ Self-destruct completed with some errors."
+            await add_alert(page, "⚠️ Self-destruct completed with some errors.")
+            print(f"Self-destruct completed with errors: {error_details}")
+        
+        self_destruct_progress.visible = False
+        self_destruct_done_btn.visible = True
+        page.update()
+        print("Self-destruct function completed")
 
     # --- Control Buttons ---
     start_button = ft.ElevatedButton("Start Monitoring", on_click=start_monitoring, icon=ft.Icons.PLAY_ARROW)
@@ -259,10 +328,44 @@ async def main(page: ft.Page):
     analytics_button = ft.ElevatedButton("View Analytics", on_click=show_analytics, icon=ft.Icons.ANALYTICS)
     self_destruct_button = ft.ElevatedButton(
         "Self Destruct",
-        on_click=open_self_destruct_dialog,
+        on_click=show_self_destruct,
         icon=ft.Icons.DELETE_FOREVER,
         color=ft.Colors.WHITE,
         bgcolor=ft.Colors.RED_700
+    )
+
+    # Self-destruct page UI elements
+    self_destruct_status = ft.Text(
+        "WARNING: This will delete ALL data including S3 bucket contents, database records, and security alerts.",
+        size=16,
+        color=ft.Colors.RED_700,
+        weight=ft.FontWeight.BOLD
+    )
+    self_destruct_details = ft.Text(
+        "This action cannot be undone! Are you sure you want to proceed?",
+        size=14
+    )
+    self_destruct_progress = ft.ProgressRing(visible=False)
+    self_destruct_confirm_btn = ft.ElevatedButton(
+        "CONFIRM DELETE", 
+        on_click=perform_self_destruct,  # Direct reference to async function
+        color=ft.Colors.WHITE,
+        bgcolor=ft.Colors.RED,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=8),
+        )
+    )
+    self_destruct_cancel_btn = ft.ElevatedButton(
+        "Nevermind", 
+        on_click=lambda _: page.go("/"),
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=8),
+        )
+    )
+    self_destruct_done_btn = ft.ElevatedButton(
+        "Return to Main Screen", 
+        on_click=lambda _: page.go("/"),
+        visible=False
     )
 
     # --- Layout ---
@@ -312,6 +415,49 @@ async def main(page: ft.Page):
                     ],
                     expand=True,
                     vertical_alignment=ft.CrossAxisAlignment.START
+                )
+            ]
+        )
+        
+    def build_self_destruct_view():
+        """Builds the self-destruct confirmation view."""
+        return ft.View(
+            "/self-destruct",
+            [
+                ft.AppBar(
+                    title=ft.Text("⚠️ SELF DESTRUCT"), 
+                    bgcolor=ft.Colors.RED_900,
+                    color=ft.Colors.WHITE
+                ),
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Icon(
+                                ft.Icons.WARNING_ROUNDED,
+                                size=80,
+                                color=ft.Colors.RED_700
+                            ),
+                            self_destruct_status,
+                            self_destruct_details,
+                            ft.Container(height=20),  # Spacer
+                            self_destruct_progress,
+                            ft.Container(height=20),  # Spacer
+                            ft.Row(
+                                [
+                                    self_destruct_confirm_btn,
+                                    self_destruct_cancel_btn,
+                                    self_destruct_done_btn
+                                ],
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                spacing=20
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=10
+                    ),
+                    alignment=ft.alignment.center,
+                    padding=50,
+                    expand=True
                 )
             ]
         )
@@ -418,11 +564,23 @@ async def main(page: ft.Page):
     async def route_change(route):
         print(f"Route change requested: {page.route}")
         page.views.clear()
+        
         if page.route == "/analytics":
-            page.views.append(await build_analytics_view()) # Build analytics view
+            page.views.append(await build_analytics_view())
+        elif page.route == "/self-destruct":
+            # Reset self-destruct page state when navigating to it
+            self_destruct_status.value = "WARNING: This will delete ALL data including S3 bucket contents, database records, and security alerts."
+            self_destruct_details.value = "This action cannot be undone! Are you sure you want to proceed?"
+            self_destruct_progress.visible = False
+            self_destruct_confirm_btn.disabled = False
+            self_destruct_cancel_btn.disabled = False
+            self_destruct_done_btn.visible = False
+            
+            page.views.append(build_self_destruct_view())
         else:
             # Default to main view for "/" or any other route
             page.views.append(build_main_view())
+            
         page.update() # Use synchronous update for view changes
 
     page.on_route_change = route_change

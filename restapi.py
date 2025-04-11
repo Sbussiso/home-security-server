@@ -12,7 +12,8 @@ from rekognition import analyze_image
 from notifications import send_security_alert
 from database import (
     save_image, add_security_alert, save_temp_image_file,
-    update_s3_url, cleanup_old_images, get_recent_images
+    update_s3_url, cleanup_old_images, get_recent_images,
+    DB_PATH
 )
 import requests
 from dotenv import load_dotenv
@@ -610,6 +611,33 @@ async def delete_s3_bucket(data: S3BucketDelete):
         return {"success": True, "message": f"Bucket {data.bucket_name} and all contents deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting bucket: {str(e)}")
+
+# New endpoint to delete the database file
+@app.post("/db/delete-file")
+async def delete_database_file():
+    """Deletes the entire SQLite database file."""
+    try:
+        if os.path.exists(DB_PATH):
+            print(f"Attempting to delete database file: {DB_PATH}")
+            os.remove(DB_PATH)
+            # Wait a moment to ensure file handle is released if needed
+            await asyncio.sleep(0.5)
+            if not os.path.exists(DB_PATH):
+                print(f"Successfully deleted database file: {DB_PATH}")
+                return {"success": True, "message": "Database file deleted successfully."}
+            else:
+                # This might happen if permissions are wrong or file is locked
+                print(f"Error: Database file {DB_PATH} still exists after removal attempt.")
+                raise HTTPException(status_code=500, detail="Failed to delete database file (still exists).")
+        else:
+            print(f"Database file {DB_PATH} not found, nothing to delete.")
+            return {"success": True, "message": "Database file not found, considered success."}
+    except PermissionError as pe:
+         print(f"PermissionError deleting database file {DB_PATH}: {pe}")
+         raise HTTPException(status_code=500, detail=f"Permission error deleting database file: {str(pe)}")
+    except Exception as e:
+        print(f"Error deleting database file {DB_PATH}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting database file: {str(e)}")
 
 if __name__ == '__main__':
     uvicorn.run(app, host="0.0.0.0", port=5000) 
