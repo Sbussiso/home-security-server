@@ -93,11 +93,13 @@ class SetupWizard:
         self.aws_frame = ttk.Frame(self.notebook, padding="10")
         self.email_frame = ttk.Frame(self.notebook, padding="10")
         self.database_frame = ttk.Frame(self.notebook, padding="10")
+        self.server_frame = ttk.Frame(self.notebook, padding="10")
         
         # Add frames to notebook
         self.notebook.add(self.aws_frame, text="AWS Configuration")
         self.notebook.add(self.email_frame, text="Email Configuration")
         self.notebook.add(self.database_frame, text="Database Configuration")
+        self.notebook.add(self.server_frame, text="Server Configuration")
         
         # Initialize variables
         self.aws_access_key = tk.StringVar()
@@ -113,9 +115,14 @@ class SetupWizard:
         self.master_username = tk.StringVar(value="admin")
         self.master_password = tk.StringVar()
         
+        # Server variables
+        self.server_host = tk.StringVar(value="0.0.0.0")
+        self.server_port = tk.StringVar(value="5000")
+        
         self.setup_aws_frame()
         self.setup_email_frame()
         self.setup_database_frame()
+        self.setup_server_frame()
         
         # Add save button
         self.save_button = ttk.Button(self.main_frame, text="Save Configuration", command=self.save_configuration)
@@ -129,7 +136,7 @@ class SetupWizard:
         Please fill in all the required information in each tab.
 
         After saving the configuration, you can start the server with:
-        python app.py
+        python server.py
         """
         ttk.Label(self.main_frame, text=help_text, wraplength=550, justify=tk.LEFT).grid(row=2, column=0, pady=10)
         
@@ -176,6 +183,15 @@ class SetupWizard:
         ttk.Label(self.database_frame, text="Master Password:").grid(row=2, column=0, sticky=tk.W, pady=5)
         ttk.Entry(self.database_frame, textvariable=self.master_password, show="*").grid(row=2, column=1, sticky=(tk.W, tk.E), pady=5)
         
+    def setup_server_frame(self):
+        # Server Host
+        ttk.Label(self.server_frame, text="Server Host:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(self.server_frame, textvariable=self.server_host).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=5)
+
+        # Server Port
+        ttk.Label(self.server_frame, text="Server Port:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(self.server_frame, textvariable=self.server_port).grid(row=1, column=1, sticky=(tk.W, tk.E), pady=5)
+        
     def validate_email(self, email):
         pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         return re.match(pattern, email) is not None
@@ -196,6 +212,19 @@ class SetupWizard:
             
         if not all([self.db_path.get(), self.master_username.get(), self.master_password.get()]):
             messagebox.showerror("Error", "Please fill in all database configuration fields")
+            return
+            
+        # Validate server config
+        if not all([self.server_host.get(), self.server_port.get()]):
+             messagebox.showerror("Error", "Please fill in all server configuration fields")
+             return
+
+        try:
+            port = int(self.server_port.get())
+            if not (1 <= port <= 65535):
+                 raise ValueError("Port must be between 1 and 65535")
+        except ValueError:
+            messagebox.showerror("Error", "Invalid port number. Please enter a number between 1 and 65535.")
             return
             
         # Create .env file
@@ -220,6 +249,10 @@ class SetupWizard:
             f.write(f"DB_PATH={self.db_path.get()}\n")
             f.write(f"MASTER_PASSWORD={self.master_password.get()}\n")
             f.write(f"MASTER_USERNAME={self.master_username.get()}\n")
+            
+            f.write(f"\n# Server Configuration\n")
+            f.write(f"SERVER_HOST={self.server_host.get()}\n")
+            f.write(f"SERVER_PORT={self.server_port.get()}\n")
             
         messagebox.showinfo("Success", "Configuration saved successfully!")
         self.root.destroy()
