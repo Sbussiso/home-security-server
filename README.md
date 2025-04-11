@@ -34,8 +34,10 @@ Additionally, the system provides a RESTful API for managing the camera, analyzi
 ### Setup Wizard
 
 The Home Security Camera System includes a user-friendly setup wizard to simplify the installation and configuration process. Follow these steps to get started:
-\
-make sure python is installed on your operating system.
+
+
+> **Note:**
+Python must be installed on your operating system. If python is not installed you can install it here at [python.org](https://www.python.org/downloads/)
 
 1. Clone the repository:
 
