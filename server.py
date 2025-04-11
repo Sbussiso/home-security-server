@@ -30,22 +30,63 @@ import boto3
 from botocore.exceptions import ClientError
 import sys
 from pathlib import Path
+import tkinter as tk
+from tkinter import ttk, messagebox
+import subprocess
+
+def show_setup_wizard_prompt():
+    """Show a GUI prompt to run the setup wizard"""
+    root = tk.Tk()
+    root.title("Security System Setup Required")
+    root.geometry("500x300")
+    root.resizable(False, False)
+    
+    # Create main frame
+    main_frame = ttk.Frame(root, padding="20")
+    main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+    
+    # Welcome message
+    welcome_label = ttk.Label(
+        main_frame,
+        text="Welcome to the Security System!",
+        font=("Arial", 14, "bold")
+    )
+    welcome_label.grid(row=0, column=0, pady=10)
+    
+    # Message
+    message = """
+    No configuration file (.env) found.
+    Please run the setup wizard to configure your security system.
+    """
+    message_label = ttk.Label(main_frame, text=message, wraplength=450, justify=tk.LEFT)
+    message_label.grid(row=1, column=0, pady=10)
+    
+    # Buttons
+    button_frame = ttk.Frame(main_frame)
+    button_frame.grid(row=2, column=0, pady=20)
+    
+    def run_setup_wizard():
+        try:
+            subprocess.Popen(["python", "setup_wizard.py"])
+            root.destroy()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to start setup wizard: {str(e)}")
+    
+    def exit_app():
+        root.destroy()
+        sys.exit(1)
+    
+    setup_button = ttk.Button(button_frame, text="Run Setup Wizard", command=run_setup_wizard)
+    setup_button.grid(row=0, column=0, padx=10)
+    
+    exit_button = ttk.Button(button_frame, text="Exit", command=exit_app)
+    exit_button.grid(row=0, column=1, padx=10)
+    
+    root.mainloop()
 
 # Check if .env file exists
 if not os.path.exists('.env'):
-    print("\n" + "="*80)
-    print("Welcome to the Security System!")
-    print("="*80)
-    print("\nNo configuration file (.env) found. Please run the setup wizard first.")
-    print("\nTo run the setup wizard:")
-    print("1. Make sure you have Python installed")
-    print("2. Install the required dependencies:")
-    print("   pip install -r requirements.txt")
-    print("3. Run the setup wizard:")
-    print("   python setup_wizard.py")
-    print("\nAfter completing the setup, you can start the server with:")
-    print("python app.py")
-    print("\n" + "="*80)
+    show_setup_wizard_prompt()
     sys.exit(1)
 
 # Load environment variables
