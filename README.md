@@ -45,6 +45,9 @@ Python must be installed on your operating system. If python is not installed yo
 git clone https://github.com/Sbussiso/home-security-server.git
 cd home-security-server
 ```
+> **Alternatively**
+Download the repo as a zip file and extract its contents. Set your directery to the newly unziped folder
+![image](https://github.com/user-attachments/assets/ab80a150-38fe-44eb-8cf2-70d0b79d67e9)
 
 2. Run the setup wizard:
 
@@ -57,22 +60,17 @@ The setup wizard will guide you through the following steps:
 - **Environment Setup**: The wizard will check your Python version and install the necessary dependencies. It will also create the required directories for the project.
 - **Configuration**: The wizard will prompt you to enter your AWS credentials (access key and secret key), email configuration (email address, password, SMTP server, and port), and database configuration (database path, master username, and master password).
 
+![image](https://github.com/user-attachments/assets/59e43797-4f31-4220-889d-6040e82f1fb3)
+
 After completing the setup wizard, a `.env` file will be created with your configuration settings.
 
-4. Initialize the database:
-
-```bash
-python database.py
-```
-
-This step will create the SQLite database file specified in the `DB_PATH` environment variable.
 
 ## Usage
 
 1. Start the FastAPI server:
 
 ```bash
-uvicorn app:app --reload
+python server.py
 ```
 
 The server will be accessible at `http://localhost:5000`.
