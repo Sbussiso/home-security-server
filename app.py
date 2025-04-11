@@ -28,6 +28,25 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import boto3
 from botocore.exceptions import ClientError
+import sys
+from pathlib import Path
+
+# Check if .env file exists
+if not os.path.exists('.env'):
+    print("\n" + "="*80)
+    print("Welcome to the Security System!")
+    print("="*80)
+    print("\nNo configuration file (.env) found. Please run the setup wizard first.")
+    print("\nTo run the setup wizard:")
+    print("1. Make sure you have Python installed")
+    print("2. Install the required dependencies:")
+    print("   pip install -r requirements.txt")
+    print("3. Run the setup wizard:")
+    print("   python setup_wizard.py")
+    print("\nAfter completing the setup, you can start the server with:")
+    print("python app.py")
+    print("\n" + "="*80)
+    sys.exit(1)
 
 # Load environment variables
 load_dotenv()
