@@ -186,3 +186,4 @@ def is_camera_monitoring():
     """Checks if the camera is currently monitoring."""
     global is_monitoring
     return is_monitoring
+
