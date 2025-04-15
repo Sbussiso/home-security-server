@@ -34,6 +34,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import subprocess
 
+# Import camera functions
+import camera as cam
+
 def show_setup_wizard_prompt():
     """Show a GUI prompt to run the setup wizard"""
     root = tk.Tk()
@@ -93,11 +96,11 @@ if not os.path.exists('.env'):
 load_dotenv()
 
 # Global variables for camera control
-camera = None
-is_monitoring = False
-monitor_thread = None
-last_frame = None
-frame_lock = threading.Lock()
+# camera = None # Removed - managed in camera.py
+# is_monitoring = False # Removed - managed in camera.py
+# monitor_thread = None # Removed - managed in camera.py
+# last_frame = None # Removed - managed in camera.py
+# frame_lock = threading.Lock() # Removed - managed in camera.py
 last_save_time = 0
 SAVE_INTERVAL = 20  # seconds between saves
 last_email_time = 0
@@ -419,117 +422,53 @@ This is an automated message from your security camera system.
     except Exception as e:
         print(f"Error processing security alerts: {str(e)}")
 
-async def monitor_camera_async():
-    """Asynchronous camera monitoring"""
-    global camera, is_monitoring, last_frame, frame_lock, last_save_time, last_email_time
-    backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
-    
-    while is_monitoring:
-        if camera is None or not camera.isOpened():
-            await asyncio.sleep(0.1)
-            continue
-            
-        ret, frame = camera.read()
-        if not ret:
-            continue
-            
-        # Process frame for motion detection
-        frame = cv2.resize(frame, (500, 500))
-        original_frame = frame.copy()
-        fgMask = backSub.apply(frame)
-        _, thresh = cv2.threshold(fgMask, 250, 255, cv2.THRESH_BINARY)
-        thresh = cv2.erode(thresh, None, iterations=2)
-        thresh = cv2.dilate(thresh, None, iterations=2)
-        
-        # Detect motion
-        contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        motion_detected = False
-        
-        for c in contours:
-            if cv2.contourArea(c) < 1500:
-                continue
-            motion_detected = True
-            (x, y, w, h) = cv2.boundingRect(c)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, "Motion Detected", (10, 20),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-        
-        with frame_lock:
-            last_frame = frame.copy()
-        
-        # Process motion detection synchronously
-        if motion_detected:
-            current_time = time.time()
-            if current_time - last_save_time >= SAVE_INTERVAL:
-                process_motion_sync(original_frame)
-                last_save_time = current_time
-        
-        await asyncio.sleep(0.1)
-
 @app.post("/camera")
 async def camera_control(action: CameraAction):
-    """Control the camera (start/stop monitoring)"""
+    """Control the camera (start/stop monitoring) using functions from camera.py"""
     try:
-        global camera, is_monitoring, monitor_thread
-        
         if action.action == 'start':
-            if is_monitoring:
-                raise HTTPException(status_code=400, detail="Camera is already monitoring")
-                
-            camera = cv2.VideoCapture(0)
-            if not camera.isOpened():
-                raise HTTPException(status_code=500, detail="Could not open video device")
-                
-            is_monitoring = True
-            # Create a new event loop for the monitoring thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            monitor_thread = threading.Thread(
-                target=lambda: loop.run_until_complete(monitor_camera_async())
-            )
-            monitor_thread.daemon = True
-            monitor_thread.start()
-            return {"success": True, "message": "Camera monitoring started"}
+            # Pass the synchronous motion processing function to the camera module
+            success, message = cam.start_monitoring(process_motion_sync, SAVE_INTERVAL)
+            if not success:
+                 raise HTTPException(status_code=500, detail=message)
+            return {"success": True, "message": message}
             
         elif action.action == 'stop':
-            if not is_monitoring:
-                raise HTTPException(status_code=400, detail="Camera is not monitoring")
-                
-            is_monitoring = False
-            if monitor_thread:
-                monitor_thread.join(timeout=1.0)
-            if camera:
-                camera.release()
-                camera = None
-            return {"success": True, "message": "Camera monitoring stopped"}
+            success, message = cam.stop_monitoring()
+            if not success:
+                 raise HTTPException(status_code=400, detail=message)
+            return {"success": True, "message": message}
             
         else:
             raise HTTPException(status_code=400, detail="Invalid action. Use 'start' or 'stop'")
             
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error controlling camera: {str(e)}")
+        # Catch potential exceptions from camera module or HTTP exceptions
+        error_detail = str(e.detail) if isinstance(e, HTTPException) else str(e)
+        status_code = e.status_code if isinstance(e, HTTPException) else 500
+        raise HTTPException(status_code=status_code, detail=f"Error controlling camera: {error_detail}")
 
 @app.get("/camera")
 async def get_camera_frame():
-    """Get the current camera frame"""
+    """Get the current camera frame using function from camera.py"""
     try:
-        global last_frame, frame_lock
+        frame_base64, message = cam.get_current_frame()
         
-        with frame_lock:
-            if last_frame is None:
-                raise HTTPException(status_code=404, detail="No frame available")
-                
-            # Convert frame to JPEG
-            _, buffer = cv2.imencode('.jpg', last_frame)
-            frame_base64 = base64.b64encode(buffer).decode('utf-8')
+        if frame_base64 is None:
+            # Handle cases like camera not monitoring or frame not ready
+            status_code = 404 if "not monitoring" in message or "No frame" in message else 500
+            raise HTTPException(status_code=status_code, detail=message)
             
-            return {
-                "success": True,
-                "frame": frame_base64
-            }
+        return {
+            "success": True,
+            "frame": frame_base64
+        }
             
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting camera frame: {str(e)}")
+        # Catch potential exceptions from camera module or HTTP exceptions
+        error_detail = str(e.detail) if isinstance(e, HTTPException) else str(e)
+        status_code = e.status_code if isinstance(e, HTTPException) else 500
+        raise HTTPException(status_code=status_code, detail=f"Error getting camera frame: {error_detail}")
 
 @app.post("/analyze")
 async def analyze_image_endpoint(image_data: ImageData):
