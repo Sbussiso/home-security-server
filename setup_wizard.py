@@ -258,10 +258,18 @@ class SetupWizard:
         self.root.destroy()
 
 if __name__ == "__main__":
+    # Ask the user whether to use GUI or terminal setup
+    choice = input("Do you want to use the GUI for setup? (yes/no): ").strip().lower()
+    
     # Run environment setup first
     setup_environment()
     
-    # Start the GUI regardless of setup success
-    root = tk.Tk()
-    app = SetupWizard(root)
-    root.mainloop()
+    if choice == "yes":
+        # Start the GUI if the user chose 'yes'
+        root = tk.Tk()
+        app = SetupWizard(root)
+        root.mainloop()
+    else:
+        # Proceed with terminal-based setup if the user chose 'no'
+        print("Proceeding with terminal setup...")
+        setup_environment()
