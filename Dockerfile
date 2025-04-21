@@ -5,6 +5,8 @@ FROM python:3.9-slim-bullseye
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+# Add system packages directory to PYTHONPATH
+ENV PYTHONPATH=/app:/usr/lib/python3/dist-packages
 
 # Set the working directory in the container
 WORKDIR /app
