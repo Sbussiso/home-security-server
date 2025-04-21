@@ -24,9 +24,11 @@ RUN apt-get update \
         # Install Numpy and OpenCV from apt
         python3-numpy \
         python3-opencv \
-        # Build tools (some packages might still need them)
+        # Build tools (essential + needed for aws-crt-python)
         build-essential \
-        # For AWS libraries
+        cmake \
+        libssl-dev \
+        # For other libraries if needed (e.g., boto3 potentially)
         git \
         # Database dependencies
         libsqlite3-dev \
@@ -41,7 +43,7 @@ COPY requirements.txt .
 # These are now installed via apt
 RUN grep -v -E "^numpy==|^opencv-python==" requirements.txt > requirements_filtered.txt
 
-# Install remaining Python dependencies via pip
+# Install remaining Python dependencies via pip (including aws-iot-device-sdk-v2)
 RUN pip install --no-cache-dir -r requirements_filtered.txt
 
 # Copy the rest of the application code into the container

@@ -8,6 +8,8 @@ import aiofiles
 import aiobotocore.session
 from aiohttp import ClientSession
 from contextlib import asynccontextmanager
+import logging
+import json
 from rekognition import analyze_image
 from notifications import send_security_alert
 from database import (
@@ -36,6 +38,7 @@ import subprocess
 
 # Import camera functions
 import camera as cam
+from iot_logging import AWSIoTHandlerV2
 
 def show_setup_wizard_prompt():
     """Show a GUI prompt to run the setup wizard"""
@@ -120,18 +123,35 @@ s3_client_sync = boto3.client(
     aws_secret_access_key=os.getenv('AWS_SECRET_KEY')
 )
 
+# Configure root logger
+log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
+log_level = getattr(logging, log_level_str, logging.INFO)
+
+# Basic console logging first
+logging.basicConfig(level=log_level,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Add AWS IoT Handler if configured
+aws_iot_handler = AWSIoTHandlerV2(level=log_level)
+if aws_iot_handler.endpoint: # Check if handler is configured
+    # Note: The handler itself now does JSON formatting, simple formatter is fine here or none
+    logging.getLogger().addHandler(aws_iot_handler)
+    logging.info("AWS IoT Logging Handler V2 configured.")
+else:
+    logging.warning("AWS IoT Logging Handler V2 not configured (check environment variables).")
+
 # --- S3 Helper Functions (adapted from aws_s3.py) ---
 def bucket_exists(bucket_name, s3_client):
     try:
         s3_client.head_bucket(Bucket=bucket_name)
-        print(f"Bucket '{bucket_name}' exists.") # Added print
+        logging.info(f"Bucket '{bucket_name}' exists.")
         return True
     except ClientError as e:
         if e.response['Error']['Code'] == '404':
-            print(f"Bucket '{bucket_name}' does not exist.") # Added print
+            logging.info(f"Bucket '{bucket_name}' does not exist.")
             return False
         else:
-            print(f"Error checking bucket '{bucket_name}': {e}") # Added print
+            logging.error(f"Error checking bucket '{bucket_name}': {e}", exc_info=True)
             raise
 
 def create_bucket(bucket_name, s3_client, region=None):
@@ -146,9 +166,9 @@ def create_bucket(bucket_name, s3_client, region=None):
                 Bucket=bucket_name,
                 CreateBucketConfiguration={'LocationConstraint': region}
             )
-        print(f'Bucket "{bucket_name}" created successfully in region {region}.')
+        logging.info(f'Bucket "{bucket_name}" created successfully in region {region}.')
     except ClientError as e:
-        print(f"Error creating bucket '{bucket_name}': {e}")
+        logging.error(f"Error creating bucket '{bucket_name}': {e}", exc_info=True)
         return False
     return True
 
@@ -158,8 +178,9 @@ async def init_async_clients():
     global async_session
     try:
         async_session = ClientSession()
+        logging.info("Async HTTP client session initialized.")
     except Exception as e:
-        print(f"Error initializing async clients: {str(e)}")
+        logging.error(f"Error initializing async clients: {str(e)}", exc_info=True)
         raise
 
 async def cleanup_async_clients():
@@ -167,18 +188,25 @@ async def cleanup_async_clients():
     try:
         if async_session:
             await async_session.close()
+            logging.info("Async HTTP client session closed.")
     except Exception as e:
-        print(f"Error cleaning up async clients: {str(e)}")
+        logging.error(f"Error cleaning up async clients: {str(e)}", exc_info=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    logging.info("Application startup...")
     try:
         await init_async_clients()
         yield
     finally:
         # Shutdown
+        logging.info("Application shutdown...")
         await cleanup_async_clients()
+        # Ensure IoT handler is closed properly
+        if aws_iot_handler:
+            aws_iot_handler.close()
+        logging.info("Application shutdown complete.")
 
 # Initialize the FastAPI application
 app = FastAPI(
@@ -229,20 +257,22 @@ def sync_upload_to_s3(file_path: str, bucket_name: str, filename: str):
     # Ensure the bucket exists before uploading
     try:
         if not bucket_exists(bucket_name, s3_client_sync):
-            print(f"Attempting to create bucket '{bucket_name}'...")
+            logging.info(f"Attempting to create bucket '{bucket_name}'...")
             if not create_bucket(bucket_name, s3_client_sync):
                 error_msg = f"Failed to create bucket '{bucket_name}'. Cannot upload."
-                print(error_msg)
+                logging.error(error_msg)
                 return False, error_msg, None
     except Exception as check_create_e:
         # Catch errors during bucket check/creation
         error_msg = f"Error checking/creating bucket '{bucket_name}': {str(check_create_e)}"
-        print(error_msg)
+        logging.error(error_msg, exc_info=True)
         return False, error_msg, None
 
     try:
         # Upload the file
+        logging.info(f"Uploading {filename} to S3 bucket {bucket_name}...")
         s3_client_sync.upload_file(file_path, bucket_name, filename)
+        logging.info(f"Successfully uploaded {filename} to S3.")
         
         # Generate a pre-signed URL that expires in 1 hour
         presigned_url = s3_client_sync.generate_presigned_url(
@@ -256,16 +286,16 @@ def sync_upload_to_s3(file_path: str, bucket_name: str, filename: str):
         
         return True, None, presigned_url
     except Exception as e:
-        print(f"Error uploading to S3: {str(e)}")
+        logging.error(f"Error uploading {filename} to S3: {str(e)}", exc_info=True)
         
         # Add specific check for NoSuchBucket during upload itself (redundant but safe)
         if isinstance(e, ClientError) and e.response['Error']['Code'] == 'NoSuchBucket':
              error_msg = f"Failed to upload {filename} to S3: Bucket '{bucket_name}' does not exist (check permissions or region)."
-             print(error_msg)
+             logging.error(error_msg)
              return False, error_msg, None
         else:
             error_msg = f"Error uploading {filename} to S3: {str(e)}"
-            print(error_msg)
+            logging.error(error_msg)
             return False, error_msg, None
 
 async def async_save_image_to_db(image_data: np.ndarray, filename: str):
@@ -315,6 +345,7 @@ def process_motion_sync(frame: np.ndarray):
         # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"motion_{timestamp}.jpg"
+        logging.info(f"Processing motion detection for {filename}")
         
         # Save to temporary file
         temp_path = f"temp_{filename}"
@@ -323,6 +354,7 @@ def process_motion_sync(frame: np.ndarray):
         try:
             # Save to database
             image_id = save_image(frame, filename)
+            logging.info(f"Saved image {filename} to database (ID: {image_id})")
             
             # Upload to S3
             success, error, s3_url = sync_upload_to_s3(
@@ -332,20 +364,23 @@ def process_motion_sync(frame: np.ndarray):
             )
             
             if not success:
-                print(f"Failed to upload to S3: {error}")
+                logging.error(f"Failed to upload {filename} to S3: {error}")
                 return
             
             # Update S3 URL in database
             update_s3_url(image_id, s3_url)
+            logging.info(f"Updated S3 URL for image ID {image_id}")
             
             # Analyze with Rekognition
+            logging.info(f"Analyzing image {filename} with Rekognition...")
             analysis = analyze_image(s3_url)
             if analysis.get('error'):
-                print(f"Error analyzing image: {analysis['error']}")
+                logging.error(f"Error analyzing image {filename}: {analysis['error']}")
                 return
             
             # Process security alerts
             if analysis['security_alerts']:
+                logging.info(f"Security alerts found for {filename}. Processing...")
                 process_security_alerts_sync(
                     image_id,
                     analysis['security_alerts'],
@@ -359,7 +394,7 @@ def process_motion_sync(frame: np.ndarray):
                 os.remove(temp_path)
                 
     except Exception as e:
-        print(f"Error processing motion: {str(e)}")
+        logging.error(f"Error processing motion: {str(e)}", exc_info=True)
 
 def process_security_alerts_sync(image_id: int, alerts: List[dict], frame: np.ndarray, s3_url: str):
     """Synchronously process security alerts"""
@@ -371,19 +406,21 @@ def process_security_alerts_sync(image_id: int, alerts: List[dict], frame: np.nd
         # Add alerts to database
         for alert in alerts:
             try:
-                add_security_alert(
+                alert_id = add_security_alert(
                     image_id,
                     alert['type'],
                     alert['confidence']
                 )
+                logging.info(f"Saved alert ID {alert_id} ({alert['type']}) for image ID {image_id}")
             except Exception as e:
-                print(f"Failed to save alert: {str(e)}")
+                logging.error(f"Failed to save alert for image ID {image_id}: {str(e)}", exc_info=True)
         
         # Send email notification if needed
-        if os.getenv('EMAIL_USER') and (current_time - last_email_time >= EMAIL_INTERVAL):
+        recipient = os.getenv('EMAIL_USER')
+        if recipient and (current_time - last_email_time >= EMAIL_INTERVAL):
             subject = "🚨 Security Alert: Suspicious Activity Detected"
             alert_details = "\n".join([
-                f"- {alert['type']} (Confidence: {alert['confidence']:.2f}%)" 
+                f"- {alert['type']}) (Confidence: {alert['confidence']:.2f}%)" 
                 for alert in alerts
             ])
             
@@ -403,49 +440,60 @@ This is an automated message from your security camera system.
                 temp_path = f"temp_alert_{image_id}.jpg"
                 cv2.imwrite(temp_path, frame)
                 
-                send_security_alert(
-                    os.getenv('EMAIL_USER'),
+                logging.info(f"Sending security alert email to {recipient} for image ID {image_id}")
+                success, error = send_security_alert(
+                    recipient,
                     subject,
                     message,
                     temp_path
                 )
-                
-                last_email_time = current_time
+                if success:
+                     logging.info("Security alert email sent successfully.")
+                     last_email_time = current_time
+                else:
+                    logging.error(f"Failed to send security alert email: {error}")
                 
                 # Clean up temporary file
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
                     
             except Exception as e:
-                print(f"Error sending email: {str(e)}")
+                logging.error(f"Error sending email: {str(e)}", exc_info=True)
                 
     except Exception as e:
-        print(f"Error processing security alerts: {str(e)}")
+        logging.error(f"Error processing security alerts: {str(e)}", exc_info=True)
 
 @app.post("/camera")
 async def camera_control(action: CameraAction):
     """Control the camera (start/stop monitoring) using functions from camera.py"""
+    logging.info(f"Received camera action request: {action.action}")
     try:
         if action.action == 'start':
             # Pass the synchronous motion processing function to the camera module
             success, message = cam.start_monitoring(process_motion_sync, SAVE_INTERVAL)
             if not success:
+                 logging.error(f"Failed to start camera monitoring: {message}")
                  raise HTTPException(status_code=500, detail=message)
+            logging.info("Camera monitoring started successfully.")
             return {"success": True, "message": message}
             
         elif action.action == 'stop':
             success, message = cam.stop_monitoring()
             if not success:
+                 logging.warning(f"Attempted to stop monitoring but failed: {message}")
                  raise HTTPException(status_code=400, detail=message)
+            logging.info("Camera monitoring stopped successfully.")
             return {"success": True, "message": message}
             
         else:
+            logging.warning(f"Received invalid camera action: {action.action}")
             raise HTTPException(status_code=400, detail="Invalid action. Use 'start' or 'stop'")
             
     except Exception as e:
         # Catch potential exceptions from camera module or HTTP exceptions
         error_detail = str(e.detail) if isinstance(e, HTTPException) else str(e)
         status_code = e.status_code if isinstance(e, HTTPException) else 500
+        logging.error(f"Error controlling camera (Status {status_code}): {error_detail}", exc_info=True)
         raise HTTPException(status_code=status_code, detail=f"Error controlling camera: {error_detail}")
 
 @app.get("/camera")
@@ -639,8 +687,11 @@ async def delete_database_file():
         raise HTTPException(status_code=500, detail=f"Error deleting database file: {str(e)}")
 
 if __name__ == '__main__':
+    host = os.getenv("SERVER_HOST", "0.0.0.0")
+    port = int(os.getenv("SERVER_PORT", 5000))
+    logging.info(f"Starting Uvicorn server on {host}:{port}")
     uvicorn.run(
         app,
-        host=os.getenv("SERVER_HOST", "0.0.0.0"),
-        port=int(os.getenv("SERVER_PORT", 5000))
+        host=host,
+        port=port
     ) 
