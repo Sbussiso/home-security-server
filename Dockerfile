@@ -50,8 +50,9 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p temp logs
 
-# Create a non-root user and group
+# Create a non-root user and group, add user to video group
 RUN groupadd -r appgroup && useradd --no-log-init -r -g appgroup appuser \
+    && usermod -a -G video appuser \
     && chown -R appuser:appgroup /app
 
 # Switch to the non-root user
