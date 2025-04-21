@@ -9,16 +9,20 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies needed for various Python packages
+# Install system dependencies needed for Python packages and the application
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        # For OpenCV
+        # Runtime dependencies for OpenCV & Numpy from apt
         libgl1-mesa-glx \
         libglib2.0-0 \
+        libatlas-base-dev \
         # For tkinter GUI (needed by setup_wizard.py)
         python3-tk \
         tk-dev \
-        # Build tools
+        # Install Numpy and OpenCV from apt
+        python3-numpy \
+        python3-opencv \
+        # Build tools (some packages might still need them)
         build-essential \
         # For AWS libraries
         git \
@@ -28,19 +32,14 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements.txt for initial processing
+# Copy requirements.txt for processing
 COPY requirements.txt .
 
 # Create a filtered requirements file without numpy and opencv-python
+# These are now installed via apt
 RUN grep -v -E "^numpy==|^opencv-python==" requirements.txt > requirements_filtered.txt
 
-# Install numpy and opencv-python separately with compatible versions for ARM 
-# Note: Older versions selected specifically for Raspberry Pi compatibility
-RUN pip install --no-cache-dir \
-    numpy==1.23.5 \
-    opencv-python==4.5.5.64
-
-# Install all other dependencies
+# Install remaining Python dependencies via pip
 RUN pip install --no-cache-dir -r requirements_filtered.txt
 
 # Copy the rest of the application code into the container
