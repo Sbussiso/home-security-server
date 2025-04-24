@@ -29,9 +29,9 @@ RUN apt-get update \
 
 # 3. Copy & install Python deps
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
- && pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir awsiotsdk
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir awsiotsdk
 
 # 4. Copy your app code
 COPY . .
@@ -48,4 +48,9 @@ RUN groupadd -r appgroup \
 # 7. **THIS IS CRITICAL** – switch and set the launch command
 USER appuser
 EXPOSE 5000
+
+# 10) Launch your FastAPI server
 CMD ["python", "server.py"]
+
+# --- TEMPORARY RUNTIME DIAGNOSTIC ---
+# CMD ["python", "-c", 'import sys; print("--- Runtime Check ---"); print(sys.path); print("--- Importing awsiot.mqtt ---"); import awsiot.mqtt; print("--- Import SUCCESS ---')']
