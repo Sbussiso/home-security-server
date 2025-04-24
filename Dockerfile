@@ -29,7 +29,13 @@ RUN apt-get update \
 
 # 3. Copy & install Python deps
 COPY requirements.txt .
+
+# Install numpy first with specific flags for ARM
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir numpy==2.2.5 --no-binary :all: \
+    || pip install --no-cache-dir numpy==2.2.5
+
+# Install remaining requirements
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir awsiotsdk
 
