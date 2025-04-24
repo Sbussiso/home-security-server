@@ -54,3 +54,4 @@ CMD ["python", "server.py"]
 
 # --- TEMPORARY RUNTIME DIAGNOSTIC ---
 # CMD ["python", "-c", 'import sys; print("--- Runtime Check ---"); print(sys.path); print("--- Importing awsiot.mqtt ---"); import awsiot.mqtt; print("--- Import SUCCESS ---')']
+ 

@@ -5,6 +5,7 @@ import base64
 import numpy as np
 import asyncio
 import os
+from iot_messaging import iot_publisher
 
 # Global camera state variables
 camera = None
@@ -37,6 +38,7 @@ async def _monitor_camera_async(motion_processor_func, save_interval):
     )
     
     last_save_time = 0
+    last_motion_time = 0  # Track last motion event time to prevent rapid-fire events
 
     print("Camera monitoring loop started.")
     while is_monitoring:
@@ -66,6 +68,7 @@ async def _monitor_camera_async(motion_processor_func, save_interval):
         
         motion_detected = False
         processed_frame_for_display = resized_frame.copy() # Frame to draw on and store
+        motion_bbox = None  # Store motion bounding box
 
         for c in contours:
             if cv2.contourArea(c) < _MIN_CONTOUR_AREA:
@@ -73,6 +76,7 @@ async def _monitor_camera_async(motion_processor_func, save_interval):
             
             motion_detected = True
             (x, y, w, h) = cv2.boundingRect(c)
+            motion_bbox = (x, y, w, h)  # Store the bounding box
             cv2.rectangle(processed_frame_for_display, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(processed_frame_for_display, "Motion Detected", (10, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
@@ -88,12 +92,26 @@ async def _monitor_camera_async(motion_processor_func, save_interval):
             if current_time - last_save_time >= save_interval:
                 print(f"Motion detected! Processing frame ({time.strftime('%H:%M:%S')})...")
                 try:
+                    # Publish motion event to IoT
+                    if current_time - last_motion_time >= 1.0:  # Prevent rapid-fire events
+                        iot_publisher.publish_event("motion_detected", {
+                            "timestamp": current_time,
+                            "confidence": 100.0,  # We can adjust this based on contour area
+                            "bounding_box": {
+                                "x": motion_bbox[0],
+                                "y": motion_bbox[1],
+                                "width": motion_bbox[2],
+                                "height": motion_bbox[3]
+                            }
+                        })
+                        last_motion_time = current_time
+                    
                     # Run the synchronous processing function in a separate thread 
                     # to avoid blocking the async loop
                     await asyncio.to_thread(motion_processor_func, original_for_processing)
                     last_save_time = current_time
                 except Exception as e:
-                    print(f"Error calling motion processor: {e}")
+                    print(f"Error processing motion: {e}")
 
         # Small delay to prevent high CPU usage
         await asyncio.sleep(0.05) 
