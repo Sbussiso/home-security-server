@@ -1,63 +1,56 @@
-# Use Python 3.9 since it has better ARM compatibility
-FROM python:3.9-slim-bullseye
+FROM python:3.10-bullseye
 
-# Set environment variables
+# 1. Prevent .pyc files, enable unbuffered logs
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PYTHONPATH=/app:/usr/lib/python3/dist-packages
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies needed for various Python packages
+# 2. Install system deps
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        # For OpenCV
-        libgl1-mesa-glx \
-        libglib2.0-0 \
-        # For tkinter GUI (needed by setup_wizard.py)
-        python3-tk \
-        tk-dev \
-        # Build tools
-        build-essential \
-        # For AWS libraries
-        git \
-        # Database dependencies
-        libsqlite3-dev \
-    # Clean up to reduce image size
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends \
+      libgl1-mesa-glx \
+      libglib2.0-0 \
+      libatlas-base-dev \
+      python3-tk \
+      tk-dev \
+      python3-numpy \
+      python3-opencv \
+      build-essential \
+      cmake \
+      libssl-dev \
+      git \
+      curl \
+      libsqlite3-dev \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements.txt for initial processing
+# 3. Copy & install Python deps
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir awsiotsdk
 
-# Create a filtered requirements file without numpy and opencv-python
-RUN grep -v -E "^numpy==|^opencv-python==" requirements.txt > requirements_filtered.txt
-
-# Install numpy and opencv-python separately with compatible versions for ARM 
-# Note: Older versions selected specifically for Raspberry Pi compatibility
-RUN pip install --no-cache-dir \
-    numpy==1.23.5 \
-    opencv-python==4.5.5.64
-
-# Install all other dependencies
-RUN pip install --no-cache-dir -r requirements_filtered.txt
-
-# Copy the rest of the application code into the container
+# 4. Copy your app code
 COPY . .
 
-# Create necessary directories
+# 5. Prepare directories
 RUN mkdir -p temp logs
 
-# Create a non-root user and group
-RUN groupadd -r appgroup && useradd --no-log-init -r -g appgroup appuser \
-    && chown -R appuser:appgroup /app
+# 6. Create non‑root user for camera access
+RUN groupadd -r appgroup \
+ && useradd --no-log-init -r -g appgroup appuser \
+ && usermod -a -G video appuser \
+ && chown -R appuser:appgroup /app
 
-# Switch to the non-root user
+# 7. **THIS IS CRITICAL** – switch and set the launch command
 USER appuser
-
-# Expose the port the app runs on
 EXPOSE 5000
 
-# Define the command to run the application
+# 10) Launch your FastAPI server
 CMD ["python", "server.py"]
+
+# --- TEMPORARY RUNTIME DIAGNOSTIC ---
+# CMD ["python", "-c", 'import sys; print("--- Runtime Check ---"); print(sys.path); print("--- Importing awsiot.mqtt ---"); import awsiot.mqtt; print("--- Import SUCCESS ---')']
