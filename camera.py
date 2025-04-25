@@ -5,6 +5,7 @@ import base64
 import numpy as np
 import asyncio
 import os
+import logging
 from iot_messaging import iot_publisher
 
 # Global camera state variables
@@ -40,16 +41,16 @@ async def _monitor_camera_async(motion_processor_func, save_interval):
     last_save_time = 0
     last_motion_time = 0  # Track last motion event time to prevent rapid-fire events
 
-    print("Camera monitoring loop started.")
+    logging.info("Camera monitoring loop started.")
     while is_monitoring:
         if camera is None or not camera.isOpened():
-            print("Waiting for camera...")
+            logging.warning("Waiting for camera...")
             await asyncio.sleep(0.5) # Wait a bit longer if camera is not ready
             continue
 
         ret, frame = camera.read()
         if not ret:
-            print("Failed to grab frame.")
+            logging.warning("Failed to grab frame.")
             await asyncio.sleep(0.1) # Short sleep on frame grab failure
             continue
 
@@ -90,11 +91,12 @@ async def _monitor_camera_async(motion_processor_func, save_interval):
         if motion_detected:
             current_time = time.time()
             if current_time - last_save_time >= save_interval:
-                print(f"Motion detected! Processing frame ({time.strftime('%H:%M:%S')})...")
+                logging.info(f"Motion detected! Processing frame ({time.strftime('%H:%M:%S')})...")
                 try:
                     # Publish motion event to IoT
                     if current_time - last_motion_time >= 1.0:  # Prevent rapid-fire events
-                        iot_publisher.publish_event("motion_detected", {
+                        logging.info("Publishing motion event to IoT...")
+                        event_data = {
                             "timestamp": current_time,
                             "confidence": 100.0,  # We can adjust this based on contour area
                             "bounding_box": {
@@ -103,7 +105,12 @@ async def _monitor_camera_async(motion_processor_func, save_interval):
                                 "width": motion_bbox[2],
                                 "height": motion_bbox[3]
                             }
-                        })
+                        }
+                        success = iot_publisher.publish_event("motion_detected", event_data)
+                        if success:
+                            logging.info("Motion event published successfully")
+                        else:
+                            logging.error("Failed to publish motion event")
                         last_motion_time = current_time
                     
                     # Run the synchronous processing function in a separate thread 
@@ -111,12 +118,12 @@ async def _monitor_camera_async(motion_processor_func, save_interval):
                     await asyncio.to_thread(motion_processor_func, original_for_processing)
                     last_save_time = current_time
                 except Exception as e:
-                    print(f"Error processing motion: {e}")
+                    logging.error(f"Error processing motion: {e}")
 
         # Small delay to prevent high CPU usage
         await asyncio.sleep(0.05) 
 
-    print("Camera monitoring loop stopped.")
+    logging.info("Camera monitoring loop stopped.")
 
 
 def start_monitoring(motion_processor_func, save_interval=20):

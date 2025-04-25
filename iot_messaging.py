@@ -2,6 +2,7 @@ import os
 import json
 import sys
 import time
+import logging
 from awscrt import io
 from awscrt.mqtt import QoS, Connection as MqttConnection
 from awsiot import mqtt_connection_builder
@@ -11,8 +12,8 @@ from awscrt.exceptions import AwsCrtError
 try:
     SDK_V2_AVAILABLE = True
 except ImportError as e:
-    print(f"Error importing AWS IoT SDK v2/CRT components: {e}", file=sys.stderr)
-    print("Please ensure 'awsiotsdk' (and 'awscrt') are installed correctly.", file=sys.stderr)
+    logging.error(f"Error importing AWS IoT SDK v2/CRT components: {e}")
+    logging.error("Please ensure 'awsiotsdk' (and 'awscrt') are installed correctly.")
     io = None
     mqtt_connection_builder = None
     QoS = None
@@ -46,13 +47,13 @@ class IoTPublisher:
 
         # Disable if SDK missing
         if not SDK_V2_AVAILABLE or io is None:
-            print("Error: AWS IoT SDK V2 or CRT components not available. Publisher disabled.", file=sys.stderr)
+            logging.error("Error: AWS IoT SDK V2 or CRT components not available. Publisher disabled.")
             self.endpoint = None
             return
 
         # Disable if config incomplete
         if not all([self.endpoint, self.cert_path, self.key_path, self.ca_path]):
-            print("Warning: AWS IoT environment variables not fully configured. Publisher disabled.", file=sys.stderr)
+            logging.error("Warning: AWS IoT environment variables not fully configured. Publisher disabled.")
             self.endpoint = None
             return
 
@@ -61,8 +62,9 @@ class IoTPublisher:
             self.event_loop_group = io.EventLoopGroup(1)
             self.host_resolver = io.DefaultHostResolver(self.event_loop_group)
             self.client_bootstrap = io.ClientBootstrap(self.event_loop_group, self.host_resolver)
+            logging.info("CRT components initialized successfully")
         except Exception as init_e:
-            print(f"Error initializing CRT components: {init_e}", file=sys.stderr)
+            logging.error(f"Error initializing CRT components: {init_e}")
             self.endpoint = None
             return
 
@@ -70,11 +72,11 @@ class IoTPublisher:
         self._connect()
 
     def _on_connection_interrupted(self, connection, error, **kwargs):
-        print(f"AWS IoT connection interrupted. Error: {error}", file=sys.stderr)
+        logging.error(f"AWS IoT connection interrupted. Error: {error}")
         self._is_connected = False
 
     def _on_connection_resumed(self, connection, return_code, session_present, **kwargs):
-        print(f"AWS IoT connection resumed. Return code: {return_code} Session present: {session_present}")
+        logging.info(f"AWS IoT connection resumed. Return code: {return_code} Session present: {session_present}")
         self._is_connected = True
 
     def _connect(self):
@@ -82,7 +84,7 @@ class IoTPublisher:
             return
 
         self._connect_in_progress = True
-        print(f"Attempting to connect to AWS IoT endpoint: {self.endpoint} with client ID: {self.client_id}")
+        logging.info(f"Attempting to connect to AWS IoT endpoint: {self.endpoint} with client ID: {self.client_id}")
         try:
             self.mqtt_connection = mqtt_connection_builder.mtls_from_path(
                 endpoint=self.endpoint,
@@ -98,10 +100,10 @@ class IoTPublisher:
             )
             connect_future = self.mqtt_connection.connect()
             connect_future.result(timeout=10.0)
-            print("AWS IoT Connection successful.")
+            logging.info("AWS IoT Connection successful.")
             self._is_connected = True
         except (AwsCrtError, Exception) as e:
-            print(f"Error connecting to AWS IoT: {e}", file=sys.stderr)
+            logging.error(f"Error connecting to AWS IoT: {e}")
             self.mqtt_connection = None
             self._is_connected = False
         finally:
@@ -110,7 +112,7 @@ class IoTPublisher:
     def publish_event(self, event_type, data):
         """Publish an event to AWS IoT Core"""
         if not self.endpoint or not self._is_connected:
-            print("Not connected to AWS IoT Core", file=sys.stderr)
+            logging.error("Not connected to AWS IoT Core")
             return False
             
         try:
@@ -123,36 +125,37 @@ class IoTPublisher:
             
             # Publish to the topic
             topic = f"security/camera/{event_type}"
+            logging.info(f"Publishing to topic: {topic}")
             if self.mqtt_connection:
                 self.mqtt_connection.publish(
                     topic=topic,
                     payload=json.dumps(payload),
                     qos=QoS.AT_LEAST_ONCE
                 )
-                print(f"Published {event_type} event to {topic}")
+                logging.info(f"Published {event_type} event to {topic}")
                 return True
             else:
-                print("Error: MQTT connection missing despite connected state.", file=sys.stderr)
+                logging.error("Error: MQTT connection missing despite connected state.")
                 self._is_connected = False
                 return False
             
         except (AwsCrtError, Exception) as e:
-            print(f"Error publishing event: {e}", file=sys.stderr)
+            logging.error(f"Error publishing event: {e}")
             self._is_connected = False
             return False
             
     def close(self):
         """Disconnect from AWS IoT Core"""
-        print("Closing AWS IoT Publisher...")
+        logging.info("Closing AWS IoT Publisher...")
         if self.mqtt_connection:
-            print("Disconnecting AWS IoT MQTT connection...")
+            logging.info("Disconnecting AWS IoT MQTT connection...")
             dfut = self.mqtt_connection.disconnect()
             if dfut:
                 try:
                     dfut.result(timeout=5.0)
-                    print("AWS IoT MQTT connection disconnected.")
+                    logging.info("AWS IoT MQTT connection disconnected.")
                 except Exception as e:
-                    print(f"Error during MQTT disconnect: {e}", file=sys.stderr)
+                    logging.error(f"Error during MQTT disconnect: {e}")
             self._is_connected = False
             self.mqtt_connection = None
 
