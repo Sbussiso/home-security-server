@@ -38,7 +38,8 @@ import subprocess
 
 # Import camera functions
 import camera as cam
-from iot_logging import AWSIoTHandlerV2
+from iot_messaging import iot_publisher
+from system_health import health_monitor
 
 def show_setup_wizard_prompt():
     """Show a GUI prompt to run the setup wizard"""
@@ -131,14 +132,14 @@ log_level = getattr(logging, log_level_str, logging.INFO)
 logging.basicConfig(level=log_level,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Add AWS IoT Handler if configured
-aws_iot_handler = AWSIoTHandlerV2(level=log_level)
-if aws_iot_handler.endpoint: # Check if handler is configured
-    # Note: The handler itself now does JSON formatting, simple formatter is fine here or none
-    logging.getLogger().addHandler(aws_iot_handler)
-    logging.info("AWS IoT Logging Handler V2 configured.")
-else:
-    logging.warning("AWS IoT Logging Handler V2 not configured (check environment variables).")
+# # Add AWS IoT Handler if configured # Removed section
+# aws_iot_handler = AWSIoTHandlerV2(level=log_level)
+# if aws_iot_handler.endpoint: # Check if handler is configured
+#     # Note: The handler itself now does JSON formatting, simple formatter is fine here or none
+#     logging.getLogger().addHandler(aws_iot_handler)
+#     logging.info("AWS IoT Logging Handler V2 configured.")
+# else:
+#     logging.warning("AWS IoT Logging Handler V2 not configured (check environment variables).")
 
 # --- S3 Helper Functions (adapted from aws_s3.py) ---
 def bucket_exists(bucket_name, s3_client):
@@ -197,15 +198,22 @@ async def lifespan(app: FastAPI):
     # Startup
     logging.info("Application startup...")
     try:
+        # Initialize async clients
         await init_async_clients()
+        
+        # Start system health monitoring (it will handle its own connection state)
+        health_monitor.start_monitoring()
+            
         yield
     finally:
         # Shutdown
         logging.info("Application shutdown...")
         await cleanup_async_clients()
-        # Ensure IoT handler is closed properly
-        if aws_iot_handler:
-            aws_iot_handler.close()
+        # Stop system health monitoring
+        health_monitor.stop_monitoring()
+        # # Ensure IoT handler is closed properly # Removed section
+        # if aws_iot_handler:
+        #     aws_iot_handler.close()
         logging.info("Application shutdown complete.")
 
 # Initialize the FastAPI application
