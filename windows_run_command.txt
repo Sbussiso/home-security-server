@@ -1,1 +1,0 @@
-docker run -it --env-file .env -v ${PWD}/creds:/app/creds -v ${PWD}/logs:/app/logs -v ${PWD}/temp:/app/temp -p 5000:5000 security-camera
