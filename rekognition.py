@@ -3,6 +3,8 @@ import requests
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 import os
+import cv2
+import numpy as np
 
 load_dotenv()
 
@@ -17,14 +19,54 @@ rekognition_client = boto3.client('rekognition',
     region_name=region
 )
 
-def analyze_image(image_url, min_confidence=70, max_labels=20):
+def draw_labels_on_frame(frame, labels, min_confidence=70):
+    """
+    Draw detected labels on the frame.
+    
+    Parameters:
+        frame (numpy.ndarray): The frame to draw on
+        labels (list): List of detected labels with confidence scores
+        min_confidence (int): Minimum confidence level to display label
+        
+    Returns:
+        numpy.ndarray: Frame with labels drawn on it
+    """
+    # Create a copy of the frame to draw on
+    frame_with_labels = frame.copy()
+    
+    # Starting position for text
+    y_position = 30
+    line_height = 30
+    
+    # Draw each label that meets the confidence threshold
+    for label in labels:
+        if label['confidence'] >= min_confidence:
+            # Format the label text
+            label_text = f"{label['name']}: {label['confidence']:.1f}%"
+            
+            # Draw the text
+            cv2.putText(
+                frame_with_labels,
+                label_text,
+                (10, y_position),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),  # Green color
+                2
+            )
+            
+            y_position += line_height
+    
+    return frame_with_labels
+
+def analyze_image(image_source, min_confidence=70, max_labels=20):
     """
     Analyze an image using AWS Rekognition and return the results.
 
     Parameters:
-        image_url (str): The S3 URL of the image to analyze
+        image_source (str): Either a local file path or S3 URL of the image to analyze
         min_confidence (int): Minimum confidence level for detected labels (default: 70)
-        max_labels (int): Maximum number of labels to return (default: 10)
+        max_labels (int): Maximum number of labels to return (default: 20)
 
     Returns:
         dict: A dictionary containing:
@@ -43,11 +85,6 @@ def analyze_image(image_url, min_confidence=70, max_labels=20):
         'person': 'Person detected',
         'human': 'Person detected',
         'face': 'Face detected',
-        'vehicle': 'Vehicle detected',
-        'car': 'Vehicle detected',
-        'truck': 'Vehicle detected',
-        'motorcycle': 'Vehicle detected',
-        'bicycle': 'Vehicle detected',
         'weapon': 'Weapon detected',
         'gun': 'Weapon detected',
         'knife': 'Weapon detected',
@@ -63,10 +100,16 @@ def analyze_image(image_url, min_confidence=70, max_labels=20):
     }
 
     try:
-        # Download the image from the provided URL
-        response = requests.get(image_url)
-        response.raise_for_status()
-        image_bytes = response.content
+        # Get image bytes based on source type
+        if image_source.startswith(('http://', 'https://')):
+            # Download from URL
+            response = requests.get(image_source)
+            response.raise_for_status()
+            image_bytes = response.content
+        else:
+            # Read from local file
+            with open(image_source, 'rb') as f:
+                image_bytes = f.read()
 
         # Call Rekognition to detect labels
         rekognition_response = rekognition_client.detect_labels(

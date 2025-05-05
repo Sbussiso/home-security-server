@@ -10,7 +10,7 @@ from aiohttp import ClientSession
 from contextlib import asynccontextmanager
 import logging
 import json
-from rekognition import analyze_image
+from rekognition import analyze_image, draw_labels_on_frame
 from notifications import send_security_alert
 from database import (
     save_image, add_security_alert, save_temp_image_file,
@@ -106,7 +106,7 @@ load_dotenv()
 # last_frame = None # Removed - managed in camera.py
 # frame_lock = threading.Lock() # Removed - managed in camera.py
 last_save_time = 0
-SAVE_INTERVAL = 20  # seconds between saves
+SAVE_INTERVAL = 2  # Reduced to 2 seconds for more frequent updates
 last_email_time = 0
 EMAIL_INTERVAL = 60  # seconds between emails
 
@@ -347,48 +347,61 @@ async def async_update_s3_url(image_id: int, s3_url: str):
         s3_url
     )
 
-def process_motion_sync(frame: np.ndarray):
-    """Synchronously process motion detection"""
+def process_frame_sync(frame: np.ndarray):
+    """Synchronously process frame for person detection"""
     try:
         # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"motion_{timestamp}.jpg"
-        logging.info(f"Processing motion detection for {filename}")
+        filename = f"frame_{timestamp}.jpg"
         
         # Save to temporary file
         temp_path = f"temp_{filename}"
         cv2.imwrite(temp_path, frame)
         
         try:
-            # Save to database
-            image_id = save_image(frame, filename)
-            logging.info(f"Saved image {filename} to database (ID: {image_id})")
-            
-            # Upload to S3
-            success, error, s3_url = sync_upload_to_s3(
-                temp_path,
-                'computer-vision-analysis',
-                filename
-            )
-            
-            if not success:
-                logging.error(f"Failed to upload {filename} to S3: {error}")
-                return
-            
-            # Update S3 URL in database
-            update_s3_url(image_id, s3_url)
-            logging.info(f"Updated S3 URL for image ID {image_id}")
-            
-            # Analyze with Rekognition
-            logging.info(f"Analyzing image {filename} with Rekognition...")
-            analysis = analyze_image(s3_url)
+            # Quick local analysis first
+            analysis = analyze_image(temp_path, min_confidence=80)  # Higher confidence threshold
             if analysis.get('error'):
-                logging.error(f"Error analyzing image {filename}: {analysis['error']}")
+                logging.error(f"Error analyzing image: {analysis['error']}")
                 return
             
-            # Process security alerts
-            if analysis['security_alerts']:
-                logging.info(f"Security alerts found for {filename}. Processing...")
+            # Draw labels on the frame
+            frame_with_labels = draw_labels_on_frame(frame, analysis['labels'])
+            
+            # Update the frame with labels
+            with cam.frame_lock:
+                cam.last_frame = frame_with_labels
+            
+            # Only do full processing if person detected
+            person_detected = any(alert['type'] == 'Person detected' for alert in analysis['security_alerts'])
+            if person_detected:
+                logging.info(f"Person detected in {filename}. Processing security alerts...")
+                
+                # Now do the full processing with S3 upload
+                image_id = save_image(frame, filename)
+                logging.info(f"Saved image {filename} to database (ID: {image_id})")
+                
+                # Upload to S3
+                success, error, s3_url = sync_upload_to_s3(
+                    temp_path,
+                    'computer-vision-analysis',
+                    filename
+                )
+                
+                if not success:
+                    logging.error(f"Failed to upload {filename} to S3: {error}")
+                    return
+                
+                # Update S3 URL in database
+                update_s3_url(image_id, s3_url)
+                logging.info(f"Updated S3 URL for image ID {image_id}")
+                
+                # Publish person detection event
+                current_time = time.time()
+                person_confidence = next((alert['confidence'] for alert in analysis['security_alerts'] 
+                                       if alert['type'] == 'Person detected'), 0)
+                cam.publish_person_detected_event(person_confidence, current_time)
+                
                 process_security_alerts_sync(
                     image_id,
                     analysis['security_alerts'],
@@ -402,7 +415,7 @@ def process_motion_sync(frame: np.ndarray):
                 os.remove(temp_path)
                 
     except Exception as e:
-        logging.error(f"Error processing motion: {str(e)}", exc_info=True)
+        logging.error(f"Error processing frame: {str(e)}", exc_info=True)
 
 def process_security_alerts_sync(image_id: int, alerts: List[dict], frame: np.ndarray, s3_url: str):
     """Synchronously process security alerts"""
@@ -471,14 +484,20 @@ This is an automated message from your security camera system.
     except Exception as e:
         logging.error(f"Error processing security alerts: {str(e)}", exc_info=True)
 
+async def process_frame_async(frame: np.ndarray):
+    """Asynchronously process frame for person detection"""
+    # Run the processing in a background task
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(thread_pool, process_frame_sync, frame)
+
 @app.post("/camera")
 async def camera_control(action: CameraAction):
     """Control the camera (start/stop monitoring) using functions from camera.py"""
     logging.info(f"Received camera action request: {action.action}")
     try:
         if action.action == 'start':
-            # Pass the synchronous motion processing function to the camera module
-            success, message = cam.start_monitoring(process_motion_sync, SAVE_INTERVAL)
+            # Pass the asynchronous frame processing function to the camera module
+            success, message = cam.start_monitoring(process_frame_async, SAVE_INTERVAL)
             if not success:
                  logging.error(f"Failed to start camera monitoring: {message}")
                  raise HTTPException(status_code=500, detail=message)
@@ -498,7 +517,6 @@ async def camera_control(action: CameraAction):
             raise HTTPException(status_code=400, detail="Invalid action. Use 'start' or 'stop'")
             
     except Exception as e:
-        # Catch potential exceptions from camera module or HTTP exceptions
         error_detail = str(e.detail) if isinstance(e, HTTPException) else str(e)
         status_code = e.status_code if isinstance(e, HTTPException) else 500
         logging.error(f"Error controlling camera (Status {status_code}): {error_detail}", exc_info=True)
