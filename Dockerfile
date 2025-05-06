@@ -10,7 +10,13 @@ WORKDIR /app
 
 # Install dependencies
 COPY requirements.txt /app/
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN apt-get update && \
+    apt-get install -y gcc g++ make libffi-dev libssl-dev && \
+    pip install --upgrade pip && \
+    pip install -r requirements.txt && \
+    apt-get remove -y gcc g++ make libffi-dev libssl-dev && \
+    apt-get autoremove -y && \
+    apt-get clean
 
 # Copy project files
 COPY . /app/
