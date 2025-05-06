@@ -1,45 +1,22 @@
-# 1. Base image (multi-arch manifest)
-FROM python:3.10-bullseye
+# Use an official ARMv7 Python runtime as a parent image (for 32-bit Raspbian OS)
+FROM arm32v7/python:3.11-slim
 
-# 2. Environment settings
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/app:/usr/lib/python3/dist-packages
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
 
+# Set work directory
 WORKDIR /app
 
-# 3. System dependencies (numeric libs via APT)
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      build-essential gfortran \
-      libopenblas-dev liblapack-dev libatlas-base-dev \
-      libssl-dev cmake git curl sqlite3 libsqlite3-dev \
-      libglib2.0-0 libgl1-mesa-glx \
-      python3-tk tk-dev \
-      libopencv-dev python3-opencv \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/*
+# Install dependencies
+COPY requirements.txt /app/
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# 4. Python deps (w/ piwheels)
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
- && pip install --no-cache-dir -r requirements.txt \
-    --extra-index-url https://www.piwheels.org/simple \
- && pip install --no-cache-dir awsiotsdk
+# Copy project files
+COPY . /app/
 
-# 5. App source
-COPY . .
+# Expose port (change if your app uses a different port)
+EXPOSE 8000
 
-# 6. Prepare runtime dirs & user
-RUN mkdir -p temp logs \
- && groupadd -r appgroup \
- && useradd --no-log-init -r -g appgroup appuser \
- && usermod -a -G video appuser \
- && chown -R appuser:appgroup /app
-
-USER appuser
-EXPOSE 5000
-
-# 7. Launch command
-CMD ["python", "server.py"]
+# Run the application (change app.py to your main script)
+CMD ["python", "app.py"]
